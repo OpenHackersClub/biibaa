@@ -73,9 +73,13 @@ class Opportunity(_Frozen):
                 f"fix(deps): bump {self.project.name} to {fixed} "
                 f"({self.advisory.id})"
             )
-        if self.kind == "dep-replacement" and self.replacement:
-            target = self.replacement.to_purls[0].split("/")[-1]
-            return f"perf(deps): replace {self.project.name} with {target}"
+        if self.replacement and self.kind in ("dep-replacement", "perf-replacement"):
+            target = self.replacement.to_purls[0].split("/")[-1].lstrip("<").rstrip(">")
+            scope = "perf" if self.kind == "perf-replacement" else "deps"
+            verb = "replace" if target != "native" else "remove"
+            if target == "native":
+                return f"{scope}: drop {self.project.name} (use native API)"
+            return f"{scope}(deps): {verb} {self.project.name} with {target}"
         return f"chore({self.project.name}): improvement opportunity"
 
 
