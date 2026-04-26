@@ -8,7 +8,7 @@
 ## Top opportunities
 
 {% for opp in opportunities %}
-### {{ loop.index }}. [{{ opp.kind }}] {{ opp.advisory.id if opp.advisory else opp.id }}
+### {{ loop.index }}. [{{ opp.kind }}] {{ opp.advisory.id if opp.advisory else (opp.replacement.from_purl.split('/')[-1] ~ ' → ' ~ (opp.replacement.to_purls | join(', ') | replace('pkg:npm/', ''))) }}
 
 {% if opp.advisory %}
 - **Severity**: {{ opp.advisory.severity or "unknown" }}{{ (' · CVSS ' ~ opp.advisory.cvss) if opp.advisory.cvss else '' }}
@@ -16,6 +16,13 @@
 - **Affected**: `{{ opp.advisory.affected_versions or "see advisory" }}`
 - **Fix**: bump to `{{ opp.advisory.fixed_versions[0] if opp.advisory.fixed_versions else "see advisory" }}`
 - **Evidence**: [{{ opp.advisory.id }}](https://github.com/advisories/{{ opp.advisory.id }})
+{% endif %}
+{% if opp.replacement %}
+- **Axis**: {{ opp.replacement.axis }}
+- **Replace**: `{{ opp.replacement.from_purl | replace('pkg:npm/', '') }}` → {% for t in opp.replacement.to_purls %}`{{ t | replace('pkg:npm/', '') }}`{{ ', ' if not loop.last else '' }}{% endfor %}
+
+- **Effort band**: {{ opp.replacement.effort }}
+- **Evidence**: e18e [module-replacements](https://github.com/e18e/module-replacements) · manifest `{{ opp.replacement.evidence.manifest }}`
 {% endif %}
 - **Effort score**: {{ "%.0f"|format(opp.effort) }} / 100 (high = easy)
 - **Impact score**: {{ "%.0f"|format(opp.impact) }} / 100
@@ -27,6 +34,9 @@
 {% for opp in opportunities %}
 {% if opp.advisory %}
 - {{ opp.advisory.id }} — https://github.com/advisories/{{ opp.advisory.id }}
+{% endif %}
+{% if opp.replacement %}
+- e18e {{ opp.replacement.evidence.manifest }} — https://github.com/e18e/module-replacements/blob/main/manifests/{{ opp.replacement.evidence.manifest }}
 {% endif %}
 {% endfor %}
 

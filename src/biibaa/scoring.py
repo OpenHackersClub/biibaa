@@ -36,6 +36,33 @@ def severity_score(*, cvss: float | None) -> float:
     return max(0.0, min(100.0, cvss * 10.0))
 
 
+REPLACEMENT_EFFORT_SCORE: dict[str, float] = {
+    # SPEC §6.2 Effort table
+    "drop-in": 95.0,
+    "minor-migration": 70.0,
+    "codemod-available": 60.0,
+    "rewrite": 20.0,
+}
+
+
+def replacement_effort_score(*, band: str) -> float:
+    return REPLACEMENT_EFFORT_SCORE.get(band, 50.0)
+
+
+def replacement_severity(*, axis: str, native: bool) -> float:
+    """Baseline axis severity for replacements lacking measured savings.
+
+    `native` replacements remove the dep entirely → highest baseline.
+    `bloat` non-native sits below `perf` since perf wins are usually
+    user-visible while bloat wins are install-time.
+    """
+    if native:
+        return 75.0
+    if axis == "perf":
+        return 60.0
+    return 45.0  # bloat default
+
+
 def effort_score(*, fixed_versions: list[str], advisory_summary: str) -> float:
     """Heuristic effort estimate. Higher = easier.
 
