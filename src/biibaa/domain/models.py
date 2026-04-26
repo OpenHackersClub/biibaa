@@ -78,12 +78,12 @@ class Opportunity(_Frozen):
             # Unpatched — the contribution is to write the upstream fix.
             return f"fix: address {self.advisory.id} in {self.project.name}"
         if self.replacement and self.kind in ("dep-replacement", "perf-replacement"):
+            from_name = self.replacement.from_purl.removeprefix("pkg:npm/")
             target = self.replacement.to_purls[0].split("/")[-1].lstrip("<").rstrip(">")
             scope = "perf" if self.kind == "perf-replacement" else "deps"
-            verb = "replace" if target != "native" else "remove"
             if target == "native":
-                return f"{scope}: drop {self.project.name} (use native API)"
-            return f"{scope}(deps): {verb} {self.project.name} with {target}"
+                return f"{scope}: drop {from_name} dep (use native API)"
+            return f"{scope}(deps): replace {from_name} with {target}"
         return f"chore({self.project.name}): improvement opportunity"
 
 
