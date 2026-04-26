@@ -27,6 +27,7 @@ class Project(_Frozen):
     dependents: int | None = None
     last_release_at: datetime | None = None
     last_commit_at: datetime | None = None
+    last_pr_merged_at: datetime | None = None
     archived: bool = False
 
 

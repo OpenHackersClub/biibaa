@@ -3,7 +3,8 @@
 - **Repo**: {{ ('[' ~ project.repo_url ~ '](' ~ project.repo_url ~ ')') if project.repo_url else '_unknown — see opportunity links_' }}
 - **Ecosystem**: {{ project.ecosystem }}
 - **Popularity**: {{ ("{:,}".format(project.downloads_weekly) ~ ' downloads/wk') if project.downloads_weekly else '—' }}
-- **Score**: {{ "%.1f"|format(score) }} (impact {{ "%.1f"|format(impact) }}, effort {{ "%.1f"|format(effort) }})
+- **Score**: {{ "%.1f"|format(score) }} (impact {{ "%.1f"|format(impact) }}, effort {{ "%.1f"|format(effort) }}, confidence {{ "%.0f"|format(confidence_value) }})
+- **Maintainer activity**: {{ activity_label }}
 
 ## Top opportunities
 
