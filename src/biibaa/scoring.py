@@ -67,11 +67,12 @@ def effort_score(*, fixed_versions: list[str], advisory_summary: str) -> float:
     """Heuristic effort estimate. Higher = easier.
 
     A version-bump fix (one fixed version, no breaking-change keywords) is the
-    canonical drop-in. Without a fixed version we'd have already filtered the
-    advisory upstream, so this is a tighter check than §6.2's full table.
+    canonical drop-in. When no fixed version exists, the contribution is to
+    *write* the upstream patch — rewrite-class effort per SPEC §6.2.
     """
     if not fixed_versions:
-        return 20.0  # rewrite-class
+        # Unpatched: the contribution is the patch itself, not a version bump.
+        return 20.0
     bump = fixed_versions[0]
     summary = (advisory_summary or "").lower()
     if any(word in summary for word in ("breaking", "rewrite", "rearchitect", "removed api")):

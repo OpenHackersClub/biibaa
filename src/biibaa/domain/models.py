@@ -40,6 +40,7 @@ class Advisory(_Frozen):
     fixed_versions: list[str] = Field(default_factory=list)
     refs: list[str] = Field(default_factory=list)
     published_at: datetime | None = None
+    repo_url: str | None = None
 
 
 class Replacement(_Frozen):
@@ -68,11 +69,14 @@ class Opportunity(_Frozen):
     @property
     def suggested_pr_title(self) -> str:
         if self.kind == "vulnerability-fix" and self.advisory:
-            fixed = self.advisory.fixed_versions[0] if self.advisory.fixed_versions else "fixed"
-            return (
-                f"fix(deps): bump {self.project.name} to {fixed} "
-                f"({self.advisory.id})"
-            )
+            if self.advisory.fixed_versions:
+                fixed = self.advisory.fixed_versions[0]
+                return (
+                    f"fix(deps): bump {self.project.name} to {fixed} "
+                    f"({self.advisory.id})"
+                )
+            # Unpatched — the contribution is to write the upstream fix.
+            return f"fix: address {self.advisory.id} in {self.project.name}"
         if self.replacement and self.kind in ("dep-replacement", "perf-replacement"):
             target = self.replacement.to_purls[0].split("/")[-1].lstrip("<").rstrip(">")
             scope = "perf" if self.kind == "perf-replacement" else "deps"
