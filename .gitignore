@@ -1,1 +1,25 @@
+# Workspace temp
 .tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build
+dist/
+build/
+
+# Runtime data — briefs, raw, warehouse (per SPEC §8)
+data/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import structlog
+import typer
+
+from biibaa.pipeline.run import run as run_pipeline
+
+app = typer.Typer(help="biibaa — open source improvement opportunity tracker")
+
+
+def _configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(message)s")
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ],
+    )
+
+
+@app.command()
+def run(
+    output_dir: Path = typer.Option(
+        Path("data/briefs"), "--out", help="Brief output directory"
+    ),
+    top_n: int = typer.Option(20, "--top", help="Number of briefs to render"),
+    ecosystem: str = typer.Option("npm", "--ecosystem"),
+    advisory_limit: int = typer.Option(
+        400, "--advisory-limit", help="Max advisories to ingest"
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Ingest advisories, score, and render top-N improvement briefs."""
+    _configure_logging(verbose)
+    paths = run_pipeline(
+        output_dir=output_dir,
+        top_n=top_n,
+        ecosystem=ecosystem,
+        advisory_limit=advisory_limit,
+    )
+    typer.echo(f"Generated {len(paths)} briefs:")
+    for p in paths:
+        typer.echo(f"  {p}")
+
+
+@app.command()
+def version() -> None:
+    """Print the installed biibaa version."""
+    from biibaa import __version__
+
+    typer.echo(__version__)
+
+
+if __name__ == "__main__":
+    app()
