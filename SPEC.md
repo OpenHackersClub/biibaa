@@ -151,11 +151,15 @@ Per-ecosystem `DOWNLOADS_REF` is calibrated separately — npm and PyPI scales d
 | Deep rewrite | 20 |
 | Replacement target unmaintained / archived | **disqualify** |
 
-### 6.3 Final
+### 6.3 Confidence (0..100)
 
-`score = 0.7 × impact + 0.3 × effort`
+Predicts whether a drive-by PR will land. Driven by the upstream repo's most-recently-merged PR timestamp (GitHub GraphQL `repository.pullRequests(states:MERGED, orderBy:UPDATED_AT)`). Decay: 100 if merged ≤14 days ago, linear to 0 by 365 days. Unknown ⇒ 30 (mild penalty so unreachable repos don't crowd out reachable ones).
 
-### 6.4 Disqualifiers
+### 6.4 Final
+
+`score = 0.6 × impact + 0.25 × effort + 0.15 × confidence`
+
+### 6.5 Disqualifiers
 
 - Project archived or no commit in 24 months → drop unless vuln severity ≥ 9
 - Replacement target itself flagged on OSV → drop

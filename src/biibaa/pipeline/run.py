@@ -23,11 +23,13 @@ import structlog
 from biibaa.adapters.e18e import E18eReplacementsSource
 from biibaa.adapters.ecosyste_ms import Dependent, EcosystemsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
+from biibaa.adapters.github_repo import GithubRepoSource
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.briefs.render import write_brief
 from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
 from biibaa.scoring import (
     REPLACEMENT_EFFORT_SCORE,
+    confidence,
     effort_score,
     final_score,
     impact,
@@ -52,7 +54,12 @@ def _project_name_from_purl(purl: str) -> str:
 
 
 def _project_from(
-    purl: str, ecosystem: str, downloads: int | None, repo_url: str | None
+    purl: str,
+    ecosystem: str,
+    downloads: int | None,
+    repo_url: str | None,
+    *,
+    last_pr_merged_at: datetime | None = None,
 ) -> Project:
     return Project(
         purl=purl,
@@ -60,6 +67,7 @@ def _project_from(
         name=_project_name_from_purl(purl),
         downloads_weekly=downloads,
         repo_url=repo_url,
+        last_pr_merged_at=last_pr_merged_at,
     )
 
 
@@ -72,7 +80,8 @@ def _vuln_opportunity(
         fixed_versions=advisory.fixed_versions, advisory_summary=advisory.summary
     )
     imp = impact(pop=pop, sev=sev)
-    score = final_score(impact_value=imp, effort_value=eff)
+    conf = confidence(last_pr_merged_at=project.last_pr_merged_at, now=run_at)
+    score = final_score(impact_value=imp, effort_value=eff, confidence_value=conf)
     return Opportunity(
         id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{project.purl}|{advisory.id}")),
         kind="vulnerability-fix",
@@ -95,7 +104,8 @@ def _replacement_opportunity(
     sev = replacement_severity(axis=replacement.axis, native=is_native)
     eff = replacement_effort_score(band=replacement.effort)
     imp = impact(pop=pop, sev=sev)
-    score = final_score(impact_value=imp, effort_value=eff)
+    conf = confidence(last_pr_merged_at=project.last_pr_merged_at, now=run_at)
+    score = final_score(impact_value=imp, effort_value=eff, confidence_value=conf)
     kind = "perf-replacement" if replacement.axis == "perf" else "dep-replacement"
     return Opportunity(
         id=str(
@@ -206,6 +216,7 @@ def run(
     downloads_src = NpmDownloadsSource()
     e18e_src = E18eReplacementsSource() if include_replacements else None
     eco_src = EcosystemsSource() if include_replacements else None
+    repo_src = GithubRepoSource()
 
     advisories: list[Advisory] = list(
         advisory_src.fetch(ecosystem=ecosystem, limit=advisory_limit)
@@ -249,8 +260,17 @@ def run(
     projects: dict[str, Project] = {}
     for purl, findings in by_project.items():
         name = _project_name_from_purl(purl)
+        last_pr = (
+            repo_src.last_merged_pr_at(repo_url=findings.repo_url)
+            if findings.repo_url
+            else None
+        )
         projects[purl] = _project_from(
-            purl, ecosystem, bulk_downloads.get(name), findings.repo_url
+            purl,
+            ecosystem,
+            bulk_downloads.get(name),
+            findings.repo_url,
+            last_pr_merged_at=last_pr,
         )
 
     # Build opportunities + briefs.
@@ -302,6 +322,7 @@ def run(
 
     advisory_src.close()
     downloads_src.close()
+    repo_src.close()
     if e18e_src:
         e18e_src.close()
     if eco_src:

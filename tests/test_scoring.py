@@ -1,5 +1,9 @@
+from datetime import UTC, datetime, timedelta
+
 from biibaa.scoring import (
+    CONFIDENCE_UNKNOWN,
     DOWNLOADS_REF_NPM,
+    confidence,
     effort_score,
     final_score,
     impact,
@@ -43,10 +47,38 @@ def test_effort_score_penalises_breaking_summary():
 
 
 def test_final_score_is_weighted_blend():
-    # 0.7 * 80 + 0.3 * 50 = 56 + 15 = 71
-    assert final_score(impact_value=80, effort_value=50) == 71.0
+    # 0.6 * 80 + 0.25 * 50 + 0.15 * 40 = 48 + 12.5 + 6 = 66.5
+    assert final_score(impact_value=80, effort_value=50, confidence_value=40) == 66.5
 
 
 def test_impact_combines_popularity_and_severity():
     # pop=50 → 0.5 ; sev=80 → 80 ; impact = 40
     assert impact(pop=50.0, sev=80.0) == 40.0
+
+
+def _now() -> datetime:
+    return datetime(2026, 4, 26, tzinfo=UTC)
+
+
+def test_confidence_unknown_when_no_signal():
+    assert confidence(last_pr_merged_at=None, now=_now()) == CONFIDENCE_UNKNOWN
+
+
+def test_confidence_full_when_fresh():
+    assert confidence(last_pr_merged_at=_now() - timedelta(days=1), now=_now()) == 100.0
+    assert confidence(last_pr_merged_at=_now() - timedelta(days=14), now=_now()) == 100.0
+
+
+def test_confidence_zero_when_stale():
+    assert confidence(last_pr_merged_at=_now() - timedelta(days=365), now=_now()) == 0.0
+    assert confidence(last_pr_merged_at=_now() - timedelta(days=900), now=_now()) == 0.0
+
+
+def test_confidence_decays_linearly_in_window():
+    # 14d → 100, 365d → 0; midpoint (189.5d) → ~50
+    mid = confidence(last_pr_merged_at=_now() - timedelta(days=189, hours=12), now=_now())
+    assert 49.5 < mid < 50.5
+
+    early = confidence(last_pr_merged_at=_now() - timedelta(days=100), now=_now())
+    late = confidence(last_pr_merged_at=_now() - timedelta(days=300), now=_now())
+    assert early > late > 0.0

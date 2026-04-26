@@ -1,8 +1,9 @@
-"""Scoring per SPEC §6 — popularity × severity × effort."""
+"""Scoring per SPEC §6 — popularity × severity × effort × confidence."""
 
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Final
 
 # Per §6.1 — flatten the long tail. Per-ecosystem refs would live in config
@@ -15,8 +16,16 @@ W_DOWNLOADS: Final[float] = 0.7
 W_STARS: Final[float] = 0.3
 
 # Final blend (§6.3)
-W_IMPACT: Final[float] = 0.7
-W_EFFORT: Final[float] = 0.3
+W_IMPACT: Final[float] = 0.6
+W_EFFORT: Final[float] = 0.25
+W_CONFIDENCE: Final[float] = 0.15
+
+# Confidence decay (§6.4): linear from 100 (≤14d) to 0 (≥365d).
+# None ⇒ 30 — mild penalty for unknown so we don't over-recommend
+# briefs to repos we couldn't reach.
+CONFIDENCE_FRESH_DAYS: Final[int] = 14
+CONFIDENCE_STALE_DAYS: Final[int] = 365
+CONFIDENCE_UNKNOWN: Final[float] = 30.0
 
 
 def popularity(*, downloads_weekly: int | None, stars: int | None) -> float:
@@ -87,5 +96,23 @@ def impact(*, pop: float, sev: float) -> float:
     return (pop / 100.0) * sev  # 0-100
 
 
-def final_score(*, impact_value: float, effort_value: float) -> float:
-    return W_IMPACT * impact_value + W_EFFORT * effort_value
+def confidence(*, last_pr_merged_at: datetime | None, now: datetime) -> float:
+    if last_pr_merged_at is None:
+        return CONFIDENCE_UNKNOWN
+    days = (now - last_pr_merged_at).total_seconds() / 86400.0
+    if days <= CONFIDENCE_FRESH_DAYS:
+        return 100.0
+    if days >= CONFIDENCE_STALE_DAYS:
+        return 0.0
+    span = CONFIDENCE_STALE_DAYS - CONFIDENCE_FRESH_DAYS
+    return 100.0 * (1.0 - (days - CONFIDENCE_FRESH_DAYS) / span)
+
+
+def final_score(
+    *, impact_value: float, effort_value: float, confidence_value: float
+) -> float:
+    return (
+        W_IMPACT * impact_value
+        + W_EFFORT * effort_value
+        + W_CONFIDENCE * confidence_value
+    )
