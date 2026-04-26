@@ -73,26 +73,36 @@ class GithubAdvisorySource:
         self,
         *,
         ecosystem: str = "npm",
-        severities: tuple[str, ...] = ("critical", "high"),
+        severities: tuple[str, ...] = ("critical", "high", "medium"),
         per_page: int = 100,
         limit: int = 500,
+        only_unpatched: bool = True,
     ) -> Iterator[Advisory]:
+        """Yield Advisories. With `only_unpatched=True` (default), keep only
+        advisories whose `first_patched_version` is null — i.e. no upstream fix
+        exists yet, so the contribution opportunity is to write the patch.
+        """
         emitted = 0
         for severity in severities:
             log.info("ghsa.fetch", ecosystem=ecosystem, severity=severity)
             try:
                 page = self._page(ecosystem=ecosystem, severity=severity, per_page=per_page)
             except httpx.HTTPStatusError as e:
-                log.warning("ghsa.fetch_failed", severity=severity, status=e.response.status_code)
+                log.warning(
+                    "ghsa.fetch_failed", severity=severity, status=e.response.status_code
+                )
                 continue
             for adv in page:
+                if adv.get("withdrawn_at"):
+                    continue
                 for vuln in adv.get("vulnerabilities") or []:
                     pkg = vuln.get("package") or {}
                     if not pkg.get("name") or pkg.get("ecosystem", "").lower() != ecosystem:
                         continue
                     fixed = vuln.get("first_patched_version")
-                    if not fixed:
-                        # No fix available — skip; we want low-effort opportunities.
+                    if only_unpatched and fixed:
+                        continue
+                    if not only_unpatched and not fixed:
                         continue
                     yield Advisory(
                         id=adv["ghsa_id"],
@@ -104,6 +114,7 @@ class GithubAdvisorySource:
                         fixed_versions=[fixed] if fixed else [],
                         refs=list(adv.get("references") or []),
                         published_at=_parse_published(adv.get("published_at")),
+                        repo_url=adv.get("source_code_location") or None,
                     )
                     emitted += 1
                     if emitted >= limit:

@@ -14,7 +14,7 @@
 - **Severity**: {{ opp.advisory.severity or "unknown" }}{{ (' · CVSS ' ~ opp.advisory.cvss) if opp.advisory.cvss else '' }}
 - **Summary**: {{ opp.advisory.summary }}
 - **Affected**: `{{ opp.advisory.affected_versions or "see advisory" }}`
-- **Fix**: bump to `{{ opp.advisory.fixed_versions[0] if opp.advisory.fixed_versions else "see advisory" }}`
+- **Fix**: {{ ('bump to `' ~ opp.advisory.fixed_versions[0] ~ '`') if opp.advisory.fixed_versions else ('_no upstream patch — contribute one_' ~ ((' at [' ~ opp.advisory.repo_url ~ '](' ~ opp.advisory.repo_url ~ ')') if opp.advisory.repo_url else '')) }}
 - **Evidence**: [{{ opp.advisory.id }}](https://github.com/advisories/{{ opp.advisory.id }})
 {% endif %}
 {% if opp.replacement %}

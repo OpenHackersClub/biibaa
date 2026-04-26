@@ -12,7 +12,7 @@ three opportunity axes (vulnerability, bloat, perf).
 
 | Spec area | MVP | Follow-up |
 |---|---|---|
-| Sources | GHSA REST + npm bulk downloads + e18e module-replacements | OSV bulk, NVD, replacements.fyi, npm dependents fan-out |
+| Sources | GHSA REST (unpatched-only) + npm bulk downloads + e18e module-replacements | OSV bulk, NVD, replacements.fyi, npm dependents fan-out |
 | Storage | In-memory + Markdown out | Parquet raw landing → DuckDB warehouse |
 | Modeling | Python pipeline | SQLMesh staging → marts |
 | Scoring axes | Vulnerability + bloat + perf | Measured bytes-saved per replacement, benchmark deltas |
@@ -28,6 +28,20 @@ uv run biibaa run --top 20
 
 Briefs land in `data/briefs/<yyyy-mm-dd>/<project>.md`.
 A pinned snapshot lives in [examples/briefs/](examples/briefs/).
+
+## What you'll see
+
+Briefs surface two kinds of contribution targets:
+
+1. **Unpatched CVEs** — GHSA advisories where `first_patched_version` is null.
+   The contribution is to write the upstream patch in the source repo. Effort
+   scored as rewrite-class (20).
+2. **Bloat / perf replacements** — packages flagged by e18e with a known modern
+   alternative. The contribution is to PR consumers to swap the dep, or to
+   deprecate the package upstream.
+
+We deliberately exclude already-patched CVEs — bumping a fixed version is
+dependabot's job, not OSS contribution work.
 
 ## Layout
 
