@@ -1,8 +1,13 @@
-"""End-to-end pipeline: ingest → score → brief.
+"""End-to-end pipeline: ingest → fan-out → score → brief.
 
-This is the MVP path. The full SPEC §5 pipeline (raw Parquet → SQLMesh staging
-→ marts → briefs) lands in follow-up PRs. For now we do everything in-memory
-and write briefs directly to disk.
+Each emitted brief points at one specific repo a contributor can PR:
+- Vuln briefs name the source repo of the vulnerable package
+  (`Advisory.repo_url`, from GHSA `source_code_location`).
+- Replacement briefs name the *dependent* project that still uses the
+  flagged package — discovered via ecosyste.ms fan-out — not the
+  flagged package itself. PRing isarray to "deprecate yourself" is
+  pointless; PRing a popular consumer to drop isarray for the native
+  API is the actual contribution.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from pathlib import Path
 import structlog
 
 from biibaa.adapters.e18e import E18eReplacementsSource
+from biibaa.adapters.ecosyste_ms import Dependent, EcosystemsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.briefs.render import write_brief
@@ -38,30 +44,22 @@ log = structlog.get_logger(__name__)
 class _ProjectFindings:
     advisories: list[Advisory] = field(default_factory=list)
     replacements: list[Replacement] = field(default_factory=list)
-
-
-def _max_fix(a: Advisory) -> tuple[int, ...]:
-    """Sortable version tuple of the highest fixed version, for dedupe tie-breaks."""
-    if not a.fixed_versions:
-        return (0,)
-    parts = a.fixed_versions[0].split(".")
-    out: list[int] = []
-    for p in parts:
-        digits = "".join(ch for ch in p if ch.isdigit())
-        out.append(int(digits) if digits else 0)
-    return tuple(out)
+    repo_url: str | None = None
 
 
 def _project_name_from_purl(purl: str) -> str:
     return purl.removeprefix("pkg:npm/")
 
 
-def _project_from(purl: str, ecosystem: str, downloads: int | None) -> Project:
+def _project_from(
+    purl: str, ecosystem: str, downloads: int | None, repo_url: str | None
+) -> Project:
     return Project(
         purl=purl,
         ecosystem=ecosystem,  # type: ignore[arg-type]
         name=_project_name_from_purl(purl),
         downloads_weekly=downloads,
+        repo_url=repo_url,
     )
 
 
@@ -100,49 +98,27 @@ def _replacement_opportunity(
     score = final_score(impact_value=imp, effort_value=eff)
     kind = "perf-replacement" if replacement.axis == "perf" else "dep-replacement"
     return Opportunity(
-        id=str(uuid.uuid5(uuid.NAMESPACE_URL, replacement.id)),
+        id=str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"{project.purl}|{replacement.id}")
+        ),
         kind=kind,
         project=project,
         replacement=replacement,
         impact=imp,
         effort=eff,
         score=score,
-        dedupe_key=replacement.id,
+        dedupe_key=f"{project.purl}|{replacement.id}",
         first_seen_at=run_at,
         last_seen_at=run_at,
     )
 
 
 def _dedupe_advisories(advs: list[Advisory]) -> list[Advisory]:
-    """Same GHSA id can appear once per affected version range — keep the highest fix."""
+    """Same GHSA id can appear once per affected version range — keep the first."""
     unique: dict[str, Advisory] = {}
     for a in advs:
-        existing = unique.get(a.id)
-        if existing is None or _max_fix(a) > _max_fix(existing):
-            unique[a.id] = a
+        unique.setdefault(a.id, a)
     return list(unique.values())
-
-
-def _select_with_axis_quota(
-    briefs: list[Brief], *, top_n: int, replacement_quota: int
-) -> list[Brief]:
-    """Pick top-N briefs honoring a minimum quota for replacement-led briefs.
-
-    Without this, vulnerability fixes (CVSS-driven severity) crowd out bloat/perf
-    replacements (baseline severity). The user wants to see both kinds.
-    """
-    vuln_briefs = [b for b in briefs if b.opportunities[0].kind == "vulnerability-fix"]
-    repl_briefs = [b for b in briefs if b.opportunities[0].kind != "vulnerability-fix"]
-    repl_take = min(replacement_quota, len(repl_briefs))
-    vuln_take = top_n - repl_take
-    if vuln_take > len(vuln_briefs):
-        # Replacement pool can backfill if we run out of vuln briefs.
-        spillover = vuln_take - len(vuln_briefs)
-        vuln_take = len(vuln_briefs)
-        repl_take = min(repl_take + spillover, len(repl_briefs))
-    chosen = vuln_briefs[:vuln_take] + repl_briefs[:repl_take]
-    chosen.sort(key=lambda b: b.score, reverse=True)
-    return chosen
 
 
 def _dedupe_replacements(reps: list[Replacement]) -> list[Replacement]:
@@ -159,6 +135,58 @@ def _dedupe_replacements(reps: list[Replacement]) -> list[Replacement]:
     return list(by_from.values())
 
 
+def _select_with_axis_quota(
+    briefs: list[Brief], *, top_n: int, replacement_quota: int
+) -> list[Brief]:
+    """Pick top-N briefs honoring a minimum quota for replacement-led briefs."""
+    vuln_briefs = [b for b in briefs if b.opportunities[0].kind == "vulnerability-fix"]
+    repl_briefs = [b for b in briefs if b.opportunities[0].kind != "vulnerability-fix"]
+    repl_take = min(replacement_quota, len(repl_briefs))
+    vuln_take = top_n - repl_take
+    if vuln_take > len(vuln_briefs):
+        spillover = vuln_take - len(vuln_briefs)
+        vuln_take = len(vuln_briefs)
+        repl_take = min(repl_take + spillover, len(repl_briefs))
+    chosen = vuln_briefs[:vuln_take] + repl_briefs[:repl_take]
+    chosen.sort(key=lambda b: b.score, reverse=True)
+    return chosen
+
+
+def _fan_out_dependents(
+    *,
+    replacements: list[Replacement],
+    eco_src: EcosystemsSource,
+    downloads_src: NpmDownloadsSource,
+    fanout_top_n: int,
+    dependents_per_replacement: int,
+) -> list[tuple[Replacement, Dependent]]:
+    """For the most-popular replacement candidates, pull top dependents.
+
+    `fanout_top_n` caps how many e18e mappings we fan out from (ranked by
+    the from-package's weekly downloads). Without this cap the API
+    budget is too large.
+    """
+    deduped = _dedupe_replacements(replacements)
+
+    # Rank from_pkgs by weekly downloads to pick which to fan out from.
+    from_names = [_project_name_from_purl(r.from_purl) for r in deduped]
+    bulk = downloads_src.weekly_downloads_bulk(packages=from_names)
+    ranked = sorted(
+        deduped,
+        key=lambda r: bulk.get(_project_name_from_purl(r.from_purl)) or 0,
+        reverse=True,
+    )[:fanout_top_n]
+
+    out: list[tuple[Replacement, Dependent]] = []
+    for r in ranked:
+        name = _project_name_from_purl(r.from_purl)
+        deps = eco_src.fetch_dependents(package=name, top_k=dependents_per_replacement)
+        log.info("fanout.dependents", from_pkg=name, count=len(deps))
+        for d in deps:
+            out.append((r, d))
+    return out
+
+
 def run(
     *,
     output_dir: Path,
@@ -167,14 +195,17 @@ def run(
     advisory_limit: int = 400,
     include_replacements: bool = True,
     max_opps_per_project: int = 6,
+    fanout_top_n: int = 40,
+    dependents_per_replacement: int = 5,
 ) -> list[Path]:
-    """Pull advisories + replacements, score, render top-N briefs."""
+    """Pull advisories + replacement-fan-outs, score, render top-N briefs."""
     run_at = datetime.now(UTC)
     log.info("pipeline.start", ecosystem=ecosystem, top_n=top_n)
 
     advisory_src = GithubAdvisorySource()
     downloads_src = NpmDownloadsSource()
     e18e_src = E18eReplacementsSource() if include_replacements else None
+    eco_src = EcosystemsSource() if include_replacements else None
 
     advisories: list[Advisory] = list(
         advisory_src.fetch(ecosystem=ecosystem, limit=advisory_limit)
@@ -186,29 +217,51 @@ def run(
         replacements = list(e18e_src.fetch())
         log.info("pipeline.replacements_fetched", count=len(replacements))
 
-    # Aggregate findings per project.
+    fanouts: list[tuple[Replacement, Dependent]] = []
+    if eco_src and replacements:
+        fanouts = _fan_out_dependents(
+            replacements=replacements,
+            eco_src=eco_src,
+            downloads_src=downloads_src,
+            fanout_top_n=fanout_top_n,
+            dependents_per_replacement=dependents_per_replacement,
+        )
+        log.info("pipeline.fanouts_built", count=len(fanouts))
+
+    # Aggregate by project.  Vuln projects keyed by package purl; replacement
+    # projects keyed by *dependent* purl.
     by_project: dict[str, _ProjectFindings] = defaultdict(_ProjectFindings)
     for a in advisories:
-        by_project[a.project_purl].advisories.append(a)
-    for r in replacements:
-        by_project[r.from_purl].replacements.append(r)
+        f = by_project[a.project_purl]
+        f.advisories.append(a)
+        if a.repo_url and not f.repo_url:
+            f.repo_url = a.repo_url
+    for rep, dep in fanouts:
+        f = by_project[dep.purl]
+        f.replacements.append(rep)
+        if dep.repo_url and not f.repo_url:
+            f.repo_url = dep.repo_url
 
-    # Hydrate popularity once per project (bulk where possible).
+    # Hydrate weekly downloads for every project we'll render.
     package_names = [_project_name_from_purl(p) for p in by_project]
     bulk_downloads = downloads_src.weekly_downloads_bulk(packages=package_names)
+
     projects: dict[str, Project] = {}
-    for purl in by_project:
+    for purl, findings in by_project.items():
         name = _project_name_from_purl(purl)
-        projects[purl] = _project_from(purl, ecosystem, bulk_downloads.get(name))
+        projects[purl] = _project_from(
+            purl, ecosystem, bulk_downloads.get(name), findings.repo_url
+        )
 
     # Build opportunities + briefs.
     briefs: list[Brief] = []
     for purl, findings in by_project.items():
         project = projects[purl]
         opps: list[Opportunity] = []
-
         for adv in _dedupe_advisories(findings.advisories):
             opps.append(_vuln_opportunity(advisory=adv, project=project, run_at=run_at))
+        # Per-dependent: dedupe replacements by from_purl so the same swap
+        # only appears once even if the dependent showed up in two manifests.
         for rep in _dedupe_replacements(findings.replacements):
             opps.append(
                 _replacement_opportunity(replacement=rep, project=project, run_at=run_at)
@@ -251,5 +304,7 @@ def run(
     downloads_src.close()
     if e18e_src:
         e18e_src.close()
+    if eco_src:
+        eco_src.close()
     log.info("pipeline.done", out_dir=str(out_dir), count=len(paths))
     return paths

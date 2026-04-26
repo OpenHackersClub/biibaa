@@ -12,7 +12,7 @@ three opportunity axes (vulnerability, bloat, perf).
 
 | Spec area | MVP | Follow-up |
 |---|---|---|
-| Sources | GHSA REST (unpatched-only) + npm bulk downloads + e18e module-replacements | OSV bulk, NVD, replacements.fyi, npm dependents fan-out |
+| Sources | GHSA REST (unpatched-only) + npm bulk downloads + e18e module-replacements + ecosyste.ms dependents | OSV bulk, NVD, replacements.fyi, OSO BigQuery |
 | Storage | In-memory + Markdown out | Parquet raw landing → DuckDB warehouse |
 | Modeling | Python pipeline | SQLMesh staging → marts |
 | Scoring axes | Vulnerability + bloat + perf | Measured bytes-saved per replacement, benchmark deltas |
@@ -31,17 +31,21 @@ A pinned snapshot lives in [examples/briefs/](examples/briefs/).
 
 ## What you'll see
 
-Briefs surface two kinds of contribution targets:
+**Every brief points at one specific repo a contributor can PR.**
 
-1. **Unpatched CVEs** — GHSA advisories where `first_patched_version` is null.
-   The contribution is to write the upstream patch in the source repo. Effort
-   scored as rewrite-class (20).
-2. **Bloat / perf replacements** — packages flagged by e18e with a known modern
-   alternative. The contribution is to PR consumers to swap the dep, or to
-   deprecate the package upstream.
+1. **Unpatched CVE briefs** — the repo is the source repo of the vulnerable
+   package (from GHSA `source_code_location`). Contribution: write the
+   upstream patch.
+2. **Bloat / perf replacement briefs** — the repo is a popular **dependent**
+   of an e18e-flagged package (discovered via ecosyste.ms fan-out).
+   Contribution: PR the dependent to swap the dep for the recommended
+   target / native API.
 
-We deliberately exclude already-patched CVEs — bumping a fixed version is
-dependabot's job, not OSS contribution work.
+We deliberately exclude:
+- Already-patched CVEs (bumping a fixed version is dependabot's job).
+- "Self-deprecation" briefs for replacement candidates (PR'ing `isarray`'s
+  own repo to advise people to drop it is not the contribution we want;
+  PR'ing `react-redux` to drop its `isarray` dep is).
 
 ## Layout
 
