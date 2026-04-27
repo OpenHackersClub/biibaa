@@ -9,7 +9,10 @@ are pulled in one query and cached together so `last_merged_pr_at` and
 - `is_archived` is a hard disqualifier — archived repos won't accept PRs.
 - `fetch_direct_deps` reads the repo's HEAD `package.json` so the pipeline
   can drop dependents that only pull in a flagged package transitively
-  (OSO's `sboms_v0` is lockfile-derived and includes the full tree)."""
+  (OSO's `sboms_v0` is lockfile-derived and includes the full tree).
+- `bench_info` derives a yes/no benchmark signal from the same cached
+  `package.json` (zero extra HTTP) — repos with benchmarks are the easiest
+  triage targets for perf-replacement briefs."""
 
 from __future__ import annotations
 
@@ -33,6 +36,27 @@ GRAPHQL_URL = "https://api.github.com/graphql"
 # every workspace's package.json multiplies API cost and risks dropping
 # legit dependents, so callers treat this as "verified, don't filter".
 MONOREPO_SENTINEL = "*MONOREPO*"
+
+# Bench libraries we trust as a signal that the repo has runnable benchmarks.
+# Conservative on purpose — vitest/jest are bench-capable but their bench
+# command is opt-in. Their devDep presence alone is too noisy; the
+# vitest/jest bench case is handled via _BENCH_CMD_PATTERNS below instead.
+_BENCH_DEV_DEPS: tuple[str, ...] = (
+    "tinybench",
+    "mitata",
+    "benchmark",
+    "cronometro",
+)
+
+# Catches `scripts.<key>` whose VALUE invokes vitest/jest in bench mode but
+# whose NAME doesn't contain "bench" (e.g. `"test:perf": "vitest bench src/"`).
+# The `[^&|;]*` guard stops matching at shell command separators, so
+# `"build && vitest && bench-something"` does NOT match — vitest there isn't
+# the thing running bench.
+_BENCH_CMD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bvitest\s+[^&|;]*bench", re.IGNORECASE),
+    re.compile(r"\bjest\s+[^&|;]*bench", re.IGNORECASE),
+)
 
 _QUERY = """
 query RepoMeta($owner: String!, $name: String!) {
@@ -88,7 +112,9 @@ class GithubRepoSource:
         self._token = _resolve_token(token)
         self._client = client or make_client(timeout=15.0)
         self._cache: dict[tuple[str, str], RepoMeta | None] = {}
-        self._direct_deps_cache: dict[tuple[str, str], set[str] | None] = {}
+        # Caches the parsed package.json so fetch_direct_deps and bench_info
+        # share a single HTTP round-trip per repo. None = fetch/parse failed.
+        self._pkg_cache: dict[tuple[str, str], dict | None] = {}
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json"}
@@ -146,6 +172,37 @@ class GithubRepoSource:
         # over-include than silently drop a project on a transient API blip.
         return bool(meta and meta.is_archived)
 
+    def _fetch_pkg_json(self, *, repo_url: str) -> dict | None:
+        """Fetch + parse the repo's HEAD package.json, cached per repo.
+
+        Returns the parsed JSON object, or None on any failure (parse error,
+        404, network error, non-object payload).
+        """
+        parsed = _parse_repo_url(repo_url)
+        if not parsed:
+            return None
+        if parsed in self._pkg_cache:
+            return self._pkg_cache[parsed]
+        owner, name = parsed
+        url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/package.json"
+        try:
+            r = self._client.get(url, headers=self._headers())
+            r.raise_for_status()
+            payload = json.loads(r.text)
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
+            log.warning(
+                "github_repo.fetch_pkg_failed",
+                repo=repo_url,
+                error=str(e),
+            )
+            self._pkg_cache[parsed] = None
+            return None
+        if not isinstance(payload, dict):
+            self._pkg_cache[parsed] = None
+            return None
+        self._pkg_cache[parsed] = payload
+        return payload
+
     def fetch_direct_deps(self, *, repo_url: str) -> set[str] | None:
         """Return the set of names listed in `dependencies`+`devDependencies`
         of the repo's HEAD `package.json`.
@@ -156,50 +213,69 @@ class GithubRepoSource:
         because enumerating each workspace's package.json multiplies API cost
         and risks dropping legit dependents.
         """
-        parsed = _parse_repo_url(repo_url)
-        if not parsed:
-            return None
-        if parsed in self._direct_deps_cache:
-            return self._direct_deps_cache[parsed]
-        owner, name = parsed
-        url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/package.json"
-        try:
-            r = self._client.get(url, headers=self._headers())
-            r.raise_for_status()
-            payload = json.loads(r.text)
-        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
-            log.warning(
-                "github_repo.fetch_direct_deps_failed",
-                repo=repo_url,
-                error=str(e),
-            )
-            self._direct_deps_cache[parsed] = None
+        payload = self._fetch_pkg_json(repo_url=repo_url)
+        if payload is None:
             return None
 
         # Monorepo detection: `workspaces` may be an array or an object with
         # a `packages` array (Yarn/Lerna style). Either form means this is a
         # monorepo root — give benefit of doubt and verify-as-passed.
-        ws = payload.get("workspaces") if isinstance(payload, dict) else None
+        ws = payload.get("workspaces")
         if isinstance(ws, list) and ws:
-            result: set[str] | None = {MONOREPO_SENTINEL}
-            self._direct_deps_cache[parsed] = result
-            return result
+            return {MONOREPO_SENTINEL}
         if isinstance(ws, dict):
             pkgs = ws.get("packages")
             if isinstance(pkgs, list) and pkgs:
-                result = {MONOREPO_SENTINEL}
-                self._direct_deps_cache[parsed] = result
-                return result
+                return {MONOREPO_SENTINEL}
 
-        deps = payload.get("dependencies") if isinstance(payload, dict) else None
-        dev_deps = payload.get("devDependencies") if isinstance(payload, dict) else None
+        deps = payload.get("dependencies")
+        dev_deps = payload.get("devDependencies")
         names: set[str] = set()
         if isinstance(deps, dict):
             names |= set(deps.keys())
         if isinstance(dev_deps, dict):
             names |= set(dev_deps.keys())
-        self._direct_deps_cache[parsed] = names
         return names
+
+    def bench_info(self, *, repo_url: str) -> tuple[bool, str | None]:
+        """Detect runnable-benchmark signals in the repo's HEAD package.json.
+
+        Cheap heuristic — no AST, no execution. Reuses the same cached
+        `package.json` as `fetch_direct_deps`, so callers that have already
+        fan-out-filtered against direct deps pay zero extra HTTP for this.
+
+        Returns `(has_benchmarks, signal)`. `signal` is a short label like
+        `"script:bench"` or `"devDep:tinybench"` for the brief render.
+        Returns `(False, None)` when unreachable or no signal found.
+        """
+        payload = self._fetch_pkg_json(repo_url=repo_url)
+        if payload is None:
+            return (False, None)
+        scripts = payload.get("scripts")
+        if isinstance(scripts, dict):
+            # 1. Script NAME contains "bench" — most direct signal.
+            for script_name in scripts:
+                if isinstance(script_name, str) and "bench" in script_name.lower():
+                    return (True, f"script:{script_name}")
+            # 2. Script VALUE invokes vitest/jest in bench mode. Catches the
+            #    common case where the script name is generic ("test:perf",
+            #    "ci") but the command body runs vitest's bench feature.
+            for script_name, script_value in scripts.items():
+                if not isinstance(script_name, str) or not isinstance(
+                    script_value, str
+                ):
+                    continue
+                for pat in _BENCH_CMD_PATTERNS:
+                    if pat.search(script_value):
+                        return (True, f"script-cmd:{script_name}")
+        # 3. Known bench-only devDep — independent of any script.
+        for field in ("devDependencies", "dependencies"):
+            section = payload.get(field)
+            if isinstance(section, dict):
+                for lib in _BENCH_DEV_DEPS:
+                    if lib in section:
+                        return (True, f"devDep:{lib}")
+        return (False, None)
 
     def close(self) -> None:
         self._client.close()
