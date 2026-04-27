@@ -26,7 +26,7 @@ uv sync
 uv run biibaa run --top 20
 ```
 
-Briefs land in `data/briefs/<yyyy-mm-dd>/<project>.md`.
+Briefs land in `data/briefs/<project>/<yyyy-mm-dd>.md`.
 A pinned snapshot lives in [examples/briefs/](examples/briefs/).
 
 ## What you'll see

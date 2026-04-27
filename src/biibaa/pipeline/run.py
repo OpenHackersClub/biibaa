@@ -353,10 +353,9 @@ def run(
         ),
     )
 
-    out_dir = output_dir / run_at.strftime("%Y-%m-%d")
     paths: list[Path] = []
     for brief in top:
-        paths.append(write_brief(brief, out_dir))
+        paths.append(write_brief(brief, output_dir / brief.slug))
 
     advisory_src.close()
     downloads_src.close()
@@ -365,5 +364,5 @@ def run(
         e18e_src.close()
     if eco_src:
         eco_src.close()
-    log.info("pipeline.done", out_dir=str(out_dir), count=len(paths))
+    log.info("pipeline.done", output_dir=str(output_dir), count=len(paths))
     return paths

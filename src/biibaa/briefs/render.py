@@ -44,6 +44,6 @@ def render_brief(brief: Brief) -> str:
 
 def write_brief(brief: Brief, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{brief.slug}.md"
+    path = out_dir / f"{brief.run_at.strftime('%Y-%m-%d')}.md"
     path.write_text(render_brief(brief))
     return path
