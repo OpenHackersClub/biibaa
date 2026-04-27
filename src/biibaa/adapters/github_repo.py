@@ -6,10 +6,14 @@ are pulled in one query and cached together so `last_merged_pr_at` and
 - `last_merged_pr_at` feeds the confidence axis (a repo whose maintainers
   merged something last week is far more likely to merge a drive-by
   contribution than one frozen for two years).
-- `is_archived` is a hard disqualifier — archived repos won't accept PRs."""
+- `is_archived` is a hard disqualifier — archived repos won't accept PRs.
+- `fetch_direct_deps` reads the repo's HEAD `package.json` so the pipeline
+  can drop dependents that only pull in a flagged package transitively
+  (OSO's `sboms_v0` is lockfile-derived and includes the full tree)."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -24,6 +28,11 @@ from biibaa.adapters._http import make_client
 log = structlog.get_logger(__name__)
 
 GRAPHQL_URL = "https://api.github.com/graphql"
+
+# Sentinel returned by fetch_direct_deps for monorepo roots — enumerating
+# every workspace's package.json multiplies API cost and risks dropping
+# legit dependents, so callers treat this as "verified, don't filter".
+MONOREPO_SENTINEL = "*MONOREPO*"
 
 _QUERY = """
 query RepoMeta($owner: String!, $name: String!) {
@@ -79,6 +88,7 @@ class GithubRepoSource:
         self._token = _resolve_token(token)
         self._client = client or make_client(timeout=15.0)
         self._cache: dict[tuple[str, str], RepoMeta | None] = {}
+        self._direct_deps_cache: dict[tuple[str, str], set[str] | None] = {}
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json"}
@@ -135,6 +145,61 @@ class GithubRepoSource:
         # Unknown / unreachable repos are NOT treated as archived — better to
         # over-include than silently drop a project on a transient API blip.
         return bool(meta and meta.is_archived)
+
+    def fetch_direct_deps(self, *, repo_url: str) -> set[str] | None:
+        """Return the set of names listed in `dependencies`+`devDependencies`
+        of the repo's HEAD `package.json`.
+
+        Returns `None` on any failure (parse error, 404, network error) so
+        callers can treat the result as "unknown — don't filter". For monorepo
+        roots (a non-empty `workspaces` field), returns `{MONOREPO_SENTINEL}`
+        because enumerating each workspace's package.json multiplies API cost
+        and risks dropping legit dependents.
+        """
+        parsed = _parse_repo_url(repo_url)
+        if not parsed:
+            return None
+        if parsed in self._direct_deps_cache:
+            return self._direct_deps_cache[parsed]
+        owner, name = parsed
+        url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/package.json"
+        try:
+            r = self._client.get(url, headers=self._headers())
+            r.raise_for_status()
+            payload = json.loads(r.text)
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
+            log.warning(
+                "github_repo.fetch_direct_deps_failed",
+                repo=repo_url,
+                error=str(e),
+            )
+            self._direct_deps_cache[parsed] = None
+            return None
+
+        # Monorepo detection: `workspaces` may be an array or an object with
+        # a `packages` array (Yarn/Lerna style). Either form means this is a
+        # monorepo root — give benefit of doubt and verify-as-passed.
+        ws = payload.get("workspaces") if isinstance(payload, dict) else None
+        if isinstance(ws, list) and ws:
+            result: set[str] | None = {MONOREPO_SENTINEL}
+            self._direct_deps_cache[parsed] = result
+            return result
+        if isinstance(ws, dict):
+            pkgs = ws.get("packages")
+            if isinstance(pkgs, list) and pkgs:
+                result = {MONOREPO_SENTINEL}
+                self._direct_deps_cache[parsed] = result
+                return result
+
+        deps = payload.get("dependencies") if isinstance(payload, dict) else None
+        dev_deps = payload.get("devDependencies") if isinstance(payload, dict) else None
+        names: set[str] = set()
+        if isinstance(deps, dict):
+            names |= set(deps.keys())
+        if isinstance(dev_deps, dict):
+            names |= set(dev_deps.keys())
+        self._direct_deps_cache[parsed] = names
+        return names
 
     def close(self) -> None:
         self._client.close()

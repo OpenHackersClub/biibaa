@@ -23,7 +23,7 @@ import structlog
 from biibaa.adapters.dependents_factory import build_dependents_source
 from biibaa.adapters.e18e import E18eReplacementsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
-from biibaa.adapters.github_repo import GithubRepoSource
+from biibaa.adapters.github_repo import MONOREPO_SENTINEL, GithubRepoSource
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.briefs.render import write_brief
 from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
@@ -189,12 +189,18 @@ def _fan_out_dependents(
     downloads_src: NpmDownloadsSource,
     fanout_top_n: int,
     dependents_per_replacement: int,
+    repo_src: GithubRepoSource | None = None,
 ) -> list[tuple[Replacement, Dependent]]:
     """For the most-popular replacement candidates, pull top dependents.
 
     `fanout_top_n` caps how many e18e mappings we fan out from (ranked by
     the from-package's weekly downloads). Without this cap the API
     budget is too large.
+
+    When `repo_src` is provided, candidates are verified against each
+    dependent's HEAD `package.json` so we drop hits that only have the
+    flagged package as a *transitive* dep (OSO's `sboms_v0` is
+    lockfile-derived and includes the full tree).
     """
     deduped = _dedupe_replacements(replacements)
 
@@ -207,13 +213,56 @@ def _fan_out_dependents(
         reverse=True,
     )[:fanout_top_n]
 
-    out: list[tuple[Replacement, Dependent]] = []
+    candidates: list[tuple[Replacement, Dependent]] = []
     for r in ranked:
         name = _project_name_from_purl(r.from_purl)
         deps = eco_src.fetch_dependents(package=name, top_k=dependents_per_replacement)
         log.info("fanout.dependents", from_pkg=name, count=len(deps))
         for d in deps:
-            out.append((r, d))
+            candidates.append((r, d))
+
+    if repo_src is None:
+        return candidates
+
+    out: list[tuple[Replacement, Dependent]] = []
+    kept = dropped = unknown = monorepo = 0
+    for rep, dep in candidates:
+        from_name = _project_name_from_purl(rep.from_purl)
+        if not dep.repo_url:
+            # No repo URL — can't verify, keep it.
+            unknown += 1
+            kept += 1
+            out.append((rep, dep))
+            continue
+        direct = repo_src.fetch_direct_deps(repo_url=dep.repo_url)
+        if direct is None:
+            unknown += 1
+            kept += 1
+            out.append((rep, dep))
+            continue
+        if MONOREPO_SENTINEL in direct:
+            monorepo += 1
+            kept += 1
+            out.append((rep, dep))
+            continue
+        if from_name in direct:
+            kept += 1
+            out.append((rep, dep))
+            continue
+        log.info(
+            "fanout.dropped_transitive_only",
+            from_pkg=from_name,
+            dependent=dep.name,
+            repo_url=dep.repo_url,
+        )
+        dropped += 1
+    log.info(
+        "fanout.direct_deps_filter",
+        kept=kept,
+        dropped=dropped,
+        unknown=unknown,
+        monorepo=monorepo,
+    )
     return out
 
 
@@ -259,6 +308,7 @@ def run(
             downloads_src=downloads_src,
             fanout_top_n=fanout_top_n,
             dependents_per_replacement=dependents_per_replacement,
+            repo_src=repo_src,
         )
         log.info("pipeline.fanouts_built", count=len(fanouts))
 
