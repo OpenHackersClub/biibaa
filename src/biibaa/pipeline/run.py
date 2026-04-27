@@ -20,13 +20,14 @@ from pathlib import Path
 
 import structlog
 
+from biibaa.adapters.dependents_factory import build_dependents_source
 from biibaa.adapters.e18e import E18eReplacementsSource
-from biibaa.adapters.ecosyste_ms import Dependent, EcosystemsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
 from biibaa.adapters.github_repo import GithubRepoSource
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.briefs.render import write_brief
 from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
+from biibaa.ports.dependents import Dependent, DependentsSource
 from biibaa.scoring import (
     REPLACEMENT_EFFORT_SCORE,
     confidence,
@@ -50,7 +51,10 @@ class _ProjectFindings:
 
 
 def _project_name_from_purl(purl: str) -> str:
-    return purl.removeprefix("pkg:npm/")
+    # Pyoso dependents arrive as `pkg:github/owner/repo`; ecosyste.ms as
+    # `pkg:npm/name`. Strip whichever prefix matches so slugs and download
+    # lookups use the canonical short form.
+    return purl.removeprefix("pkg:npm/").removeprefix("pkg:github/")
 
 
 def _project_from(
@@ -60,6 +64,7 @@ def _project_from(
     repo_url: str | None,
     *,
     last_pr_merged_at: datetime | None = None,
+    archived: bool = False,
 ) -> Project:
     return Project(
         purl=purl,
@@ -68,6 +73,21 @@ def _project_from(
         downloads_weekly=downloads,
         repo_url=repo_url,
         last_pr_merged_at=last_pr_merged_at,
+        archived=archived,
+    )
+
+
+def _is_eligible(project: Project, *, min_weekly_downloads: int) -> bool:
+    """Drop archived repos and packages below the weekly-downloads floor.
+
+    Unknown downloads (None) pass through — better to over-include than to
+    silently drop a project on a transient npm registry hiccup.
+    """
+    if project.archived:
+        return False
+    return not (
+        project.downloads_weekly is not None
+        and project.downloads_weekly < min_weekly_downloads
     )
 
 
@@ -165,7 +185,7 @@ def _select_with_axis_quota(
 def _fan_out_dependents(
     *,
     replacements: list[Replacement],
-    eco_src: EcosystemsSource,
+    eco_src: DependentsSource,
     downloads_src: NpmDownloadsSource,
     fanout_top_n: int,
     dependents_per_replacement: int,
@@ -207,6 +227,7 @@ def run(
     max_opps_per_project: int = 6,
     fanout_top_n: int = 40,
     dependents_per_replacement: int = 5,
+    min_weekly_downloads: int = 50_000,
 ) -> list[Path]:
     """Pull advisories + replacement-fan-outs, score, render top-N briefs."""
     run_at = datetime.now(UTC)
@@ -215,7 +236,9 @@ def run(
     advisory_src = GithubAdvisorySource()
     downloads_src = NpmDownloadsSource()
     e18e_src = E18eReplacementsSource() if include_replacements else None
-    eco_src = EcosystemsSource() if include_replacements else None
+    eco_src: DependentsSource | None = (
+        build_dependents_source() if include_replacements else None
+    )
     repo_src = GithubRepoSource()
 
     advisories: list[Advisory] = list(
@@ -260,8 +283,8 @@ def run(
     projects: dict[str, Project] = {}
     for purl, findings in by_project.items():
         name = _project_name_from_purl(purl)
-        last_pr = (
-            repo_src.last_merged_pr_at(repo_url=findings.repo_url)
+        meta = (
+            repo_src.fetch_meta(repo_url=findings.repo_url)
             if findings.repo_url
             else None
         )
@@ -270,13 +293,28 @@ def run(
             ecosystem,
             bulk_downloads.get(name),
             findings.repo_url,
-            last_pr_merged_at=last_pr,
+            last_pr_merged_at=meta.last_merged_pr_at if meta else None,
+            archived=meta.is_archived if meta else False,
         )
+
+    skipped = sum(
+        1
+        for p in projects.values()
+        if not _is_eligible(p, min_weekly_downloads=min_weekly_downloads)
+    )
+    log.info(
+        "pipeline.eligibility_filter",
+        kept=len(projects) - skipped,
+        skipped=skipped,
+        min_weekly_downloads=min_weekly_downloads,
+    )
 
     # Build opportunities + briefs.
     briefs: list[Brief] = []
     for purl, findings in by_project.items():
         project = projects[purl]
+        if not _is_eligible(project, min_weekly_downloads=min_weekly_downloads):
+            continue
         opps: list[Opportunity] = []
         for adv in _dedupe_advisories(findings.advisories):
             opps.append(_vuln_opportunity(advisory=adv, project=project, run_at=run_at))
