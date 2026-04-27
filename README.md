@@ -27,7 +27,6 @@ uv run biibaa run --top 20
 ```
 
 Briefs land in `data/briefs/<project>/<yyyy-mm-dd>.md`.
-A pinned snapshot lives in [examples/briefs/](examples/briefs/).
 
 ## What you'll see
 
@@ -58,7 +57,6 @@ src/biibaa/
   briefs/           # Jinja brief template + renderer
   cli/              # Typer entry: `biibaa run`
 tests/              # pytest unit + adapter tests
-examples/briefs/    # Snapshot of generated briefs (committed)
 ```
 
 ## Behind a MITM proxy
