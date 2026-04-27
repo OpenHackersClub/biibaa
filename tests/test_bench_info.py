@@ -121,3 +121,104 @@ def test_bench_info_script_match_is_case_insensitive(httpx_mock: HTTPXMock) -> N
     has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
     assert has_bench is True
     assert signal == "script:Bench"
+
+
+# ---------- script-value scan (vitest/jest bench commands) ----------
+
+
+def test_bench_info_detects_vitest_bench_in_script_value(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Catches vitest's bench command when the script name lacks "bench"."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={
+            "scripts": {"test:perf": "vitest bench src/"},
+            "devDependencies": {"vitest": "^1.0.0"},
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is True
+    assert signal == "script-cmd:test:perf"
+
+
+def test_bench_info_detects_jest_bench_in_script_value(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={
+            "scripts": {"perf": "jest --testPathPattern bench"},
+            "devDependencies": {"jest": "^29.0.0"},
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is True
+    assert signal == "script-cmd:perf"
+
+
+def test_bench_info_does_not_match_plain_vitest(httpx_mock: HTTPXMock) -> None:
+    """`vitest` alone is just a test runner — no bench signal expected."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={
+            "scripts": {"test": "vitest", "ci": "vitest run"},
+            "devDependencies": {"vitest": "^1.0.0"},
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is False
+    assert signal is None
+
+
+def test_bench_info_value_match_stops_at_command_separator(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """vitest is unrelated to the later "bench-something" — must not match."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={"scripts": {"ci": "vitest && build && bench-something"}},
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is False
+    assert signal is None
+
+
+def test_bench_info_name_match_takes_priority_over_value_match(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """When both fire, the name-match path wins — it's a more direct signal."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={
+            "scripts": {
+                "bench": "node bench.js",
+                "test:perf": "vitest bench src/",
+            }
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is True
+    assert signal == "script:bench"
+
+
+def test_bench_info_value_match_is_case_insensitive(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        method="GET",
+        json={"scripts": {"PerfTest": "VITEST BENCH src/"}},
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    has_bench, signal = src.bench_info(repo_url="https://github.com/foo/bar")
+    assert has_bench is True
+    assert signal == "script-cmd:PerfTest"

@@ -39,12 +39,23 @@ MONOREPO_SENTINEL = "*MONOREPO*"
 
 # Bench libraries we trust as a signal that the repo has runnable benchmarks.
 # Conservative on purpose — vitest/jest are bench-capable but their bench
-# command is opt-in and noisy as a signal, so we exclude them.
+# command is opt-in. Their devDep presence alone is too noisy; the
+# vitest/jest bench case is handled via _BENCH_CMD_PATTERNS below instead.
 _BENCH_DEV_DEPS: tuple[str, ...] = (
     "tinybench",
     "mitata",
     "benchmark",
     "cronometro",
+)
+
+# Catches `scripts.<key>` whose VALUE invokes vitest/jest in bench mode but
+# whose NAME doesn't contain "bench" (e.g. `"test:perf": "vitest bench src/"`).
+# The `[^&|;]*` guard stops matching at shell command separators, so
+# `"build && vitest && bench-something"` does NOT match — vitest there isn't
+# the thing running bench.
+_BENCH_CMD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bvitest\s+[^&|;]*bench", re.IGNORECASE),
+    re.compile(r"\bjest\s+[^&|;]*bench", re.IGNORECASE),
 )
 
 _QUERY = """
@@ -242,9 +253,22 @@ class GithubRepoSource:
             return (False, None)
         scripts = payload.get("scripts")
         if isinstance(scripts, dict):
+            # 1. Script NAME contains "bench" — most direct signal.
             for script_name in scripts:
                 if isinstance(script_name, str) and "bench" in script_name.lower():
                     return (True, f"script:{script_name}")
+            # 2. Script VALUE invokes vitest/jest in bench mode. Catches the
+            #    common case where the script name is generic ("test:perf",
+            #    "ci") but the command body runs vitest's bench feature.
+            for script_name, script_value in scripts.items():
+                if not isinstance(script_name, str) or not isinstance(
+                    script_value, str
+                ):
+                    continue
+                for pat in _BENCH_CMD_PATTERNS:
+                    if pat.search(script_value):
+                        return (True, f"script-cmd:{script_name}")
+        # 3. Known bench-only devDep — independent of any script.
         for field in ("devDependencies", "dependencies"):
             section = payload.get(field)
             if isinstance(section, dict):
