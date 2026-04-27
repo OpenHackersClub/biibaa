@@ -29,6 +29,8 @@ class Project(_Frozen):
     last_commit_at: datetime | None = None
     last_pr_merged_at: datetime | None = None
     archived: bool = False
+    has_benchmarks: bool | None = None
+    bench_signal: str | None = None
 
 
 class Advisory(_Frozen):

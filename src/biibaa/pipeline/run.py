@@ -65,6 +65,8 @@ def _project_from(
     *,
     last_pr_merged_at: datetime | None = None,
     archived: bool = False,
+    has_benchmarks: bool | None = None,
+    bench_signal: str | None = None,
 ) -> Project:
     return Project(
         purl=purl,
@@ -74,6 +76,8 @@ def _project_from(
         repo_url=repo_url,
         last_pr_merged_at=last_pr_merged_at,
         archived=archived,
+        has_benchmarks=has_benchmarks,
+        bench_signal=bench_signal,
     )
 
 
@@ -338,6 +342,13 @@ def run(
             if findings.repo_url
             else None
         )
+        # Only read bench info for replacement-driven projects: fan-out has
+        # already fetched their package.json so this is a free cache hit.
+        # Skipping vuln-only projects keeps the HTTP budget unchanged.
+        has_bench: bool | None = None
+        bench_signal: str | None = None
+        if findings.repo_url and findings.replacements:
+            has_bench, bench_signal = repo_src.bench_info(repo_url=findings.repo_url)
         projects[purl] = _project_from(
             purl,
             ecosystem,
@@ -345,6 +356,8 @@ def run(
             findings.repo_url,
             last_pr_merged_at=meta.last_merged_pr_at if meta else None,
             archived=meta.is_archived if meta else False,
+            has_benchmarks=has_bench,
+            bench_signal=bench_signal,
         )
 
     skipped = sum(

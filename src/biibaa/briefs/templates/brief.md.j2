@@ -5,6 +5,11 @@
 - **Popularity**: {{ ("{:,}".format(project.downloads_weekly) ~ ' downloads/wk') if project.downloads_weekly else '—' }}
 - **Score**: {{ "%.1f"|format(score) }} (impact {{ "%.1f"|format(impact) }}, effort {{ "%.1f"|format(effort) }}, confidence {{ "%.0f"|format(confidence_value) }})
 - **Maintainer activity**: {{ activity_label }}
+{% if project.has_benchmarks %}
+- **Benchmarks**: yes — `{{ project.bench_signal }}` (perf changes are falsifiable in this repo)
+{% elif project.has_benchmarks is sameas false %}
+- **Benchmarks**: none detected in HEAD `package.json`
+{% endif %}
 
 ## Top opportunities
 
