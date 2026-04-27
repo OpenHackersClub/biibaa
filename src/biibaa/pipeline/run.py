@@ -20,11 +20,13 @@ from pathlib import Path
 
 import structlog
 
+from biibaa.adapters._semver import is_version_in_range
 from biibaa.adapters.dependents_factory import build_dependents_source
 from biibaa.adapters.e18e import E18eReplacementsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
 from biibaa.adapters.github_repo import MONOREPO_SENTINEL, GithubRepoSource
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
+from biibaa.adapters.npm_registry import NpmRegistrySource
 from biibaa.briefs.render import write_brief
 from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
 from biibaa.ports.dependents import Dependent, DependentsSource
@@ -153,6 +155,47 @@ def _dedupe_advisories(advs: list[Advisory]) -> list[Advisory]:
     for a in advs:
         unique.setdefault(a.id, a)
     return list(unique.values())
+
+
+def _drop_outdated_unpatched(
+    advisories: list[Advisory], registry: NpmRegistrySource
+) -> list[Advisory]:
+    """Drop unpatched advisories whose affected range no longer covers `latest`.
+
+    GHSA frequently leaves `first_patched_version` null after a project moves
+    past the affected range without backporting a fix. Those records aren't
+    a contribution opportunity — users who upgrade are no longer exposed.
+    """
+    purls = sorted(
+        {a.project_purl for a in advisories if a.affected_versions}
+    )
+    names = [_project_name_from_purl(p) for p in purls]
+    latest_by_name = registry.latest_versions(packages=names)
+
+    kept: list[Advisory] = []
+    dropped = 0
+    for a in advisories:
+        if not a.affected_versions:
+            kept.append(a)
+            continue
+        latest = latest_by_name.get(_project_name_from_purl(a.project_purl))
+        if latest is None:
+            kept.append(a)
+            continue
+        in_range = is_version_in_range(latest, a.affected_versions)
+        if in_range is False:
+            log.info(
+                "advisory.dropped_outdated",
+                ghsa=a.id,
+                purl=a.project_purl,
+                latest=latest,
+                range=a.affected_versions,
+            )
+            dropped += 1
+            continue
+        kept.append(a)
+    log.info("advisory.outdated_filter", kept=len(kept), dropped=dropped)
+    return kept
 
 
 def _dedupe_replacements(reps: list[Replacement]) -> list[Replacement]:
@@ -288,6 +331,7 @@ def run(
 
     advisory_src = GithubAdvisorySource()
     downloads_src = NpmDownloadsSource()
+    registry_src = NpmRegistrySource() if ecosystem == "npm" else None
     e18e_src = E18eReplacementsSource() if include_replacements else None
     eco_src: DependentsSource | None = (
         build_dependents_source() if include_replacements else None
@@ -298,6 +342,8 @@ def run(
         advisory_src.fetch(ecosystem=ecosystem, limit=advisory_limit)
     )
     log.info("pipeline.advisories_fetched", count=len(advisories))
+    if registry_src:
+        advisories = _drop_outdated_unpatched(advisories, registry_src)
 
     replacements: list[Replacement] = []
     if e18e_src:
@@ -422,6 +468,8 @@ def run(
 
     advisory_src.close()
     downloads_src.close()
+    if registry_src:
+        registry_src.close()
     repo_src.close()
     if e18e_src:
         e18e_src.close()
