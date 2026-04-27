@@ -25,6 +25,7 @@ from datetime import datetime
 
 import httpx
 import structlog
+import yaml
 
 from biibaa.adapters._http import make_client
 
@@ -32,10 +33,22 @@ log = structlog.get_logger(__name__)
 
 GRAPHQL_URL = "https://api.github.com/graphql"
 
-# Sentinel returned by fetch_direct_deps for monorepo roots — enumerating
-# every workspace's package.json multiplies API cost and risks dropping
-# legit dependents, so callers treat this as "verified, don't filter".
+# Sentinel returned by fetch_direct_deps for monorepo roots when no
+# lockfile is available — enumerating every workspace's package.json
+# multiplies API cost and risks dropping legit dependents, so callers
+# treat this as "verified, don't filter". Preferred path is to parse
+# `pnpm-lock.yaml` instead, which lists direct deps for every workspace
+# in a single HTTP fetch.
 MONOREPO_SENTINEL = "*MONOREPO*"
+
+# Workspace dependency sections in `pnpm-lock.yaml` `importers.<path>` whose
+# keys are direct deps of that workspace's `package.json`.
+_PNPM_DEP_SECTIONS: tuple[str, ...] = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
 
 # Bench libraries we trust as a signal that the repo has runnable benchmarks.
 # Conservative on purpose — vitest/jest are bench-capable but their bench
@@ -115,6 +128,10 @@ class GithubRepoSource:
         # Caches the parsed package.json so fetch_direct_deps and bench_info
         # share a single HTTP round-trip per repo. None = fetch/parse failed.
         self._pkg_cache: dict[tuple[str, str], dict | None] = {}
+        # Caches the union of direct-dep names across all workspaces parsed
+        # from `pnpm-lock.yaml`. None = fetch or parse failed (caller falls
+        # back to MONOREPO_SENTINEL).
+        self._lockfile_cache: dict[tuple[str, str], set[str] | None] = {}
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json"}
@@ -203,15 +220,67 @@ class GithubRepoSource:
         self._pkg_cache[parsed] = payload
         return payload
 
+    def _fetch_pnpm_lockfile_deps(self, *, repo_url: str) -> set[str] | None:
+        """Parse `pnpm-lock.yaml` and return the union of direct-dep names
+        across every workspace's `importers.<path>` entry.
+
+        pnpm's `importers` map is keyed by workspace path; under each entry
+        the `dependencies` / `devDependencies` / `optionalDependencies` /
+        `peerDependencies` maps mirror the workspace's `package.json` —
+        their keys are exactly the directly-declared deps. Transitive deps
+        live under the separate top-level `packages` map and are excluded.
+
+        Returns `None` if the lockfile is missing, unparseable, or empty.
+        """
+        parsed = _parse_repo_url(repo_url)
+        if not parsed:
+            return None
+        if parsed in self._lockfile_cache:
+            return self._lockfile_cache[parsed]
+        owner, name = parsed
+        url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/pnpm-lock.yaml"
+        try:
+            r = self._client.get(url, headers=self._headers())
+            r.raise_for_status()
+            doc = yaml.safe_load(r.text)
+        except (httpx.HTTPError, yaml.YAMLError) as e:
+            log.warning("github_repo.fetch_lockfile_failed", repo=repo_url, error=str(e))
+            self._lockfile_cache[parsed] = None
+            return None
+        if not isinstance(doc, dict):
+            self._lockfile_cache[parsed] = None
+            return None
+        importers = doc.get("importers")
+        if not isinstance(importers, dict):
+            self._lockfile_cache[parsed] = None
+            return None
+        names: set[str] = set()
+        for imp in importers.values():
+            if not isinstance(imp, dict):
+                continue
+            for section in _PNPM_DEP_SECTIONS:
+                m = imp.get(section)
+                if isinstance(m, dict):
+                    names |= set(m.keys())
+        if not names:
+            self._lockfile_cache[parsed] = None
+            return None
+        self._lockfile_cache[parsed] = names
+        return names
+
     def fetch_direct_deps(self, *, repo_url: str) -> set[str] | None:
         """Return the set of names listed in `dependencies`+`devDependencies`
         of the repo's HEAD `package.json`.
 
         Returns `None` on any failure (parse error, 404, network error) so
         callers can treat the result as "unknown — don't filter". For monorepo
-        roots (a non-empty `workspaces` field), returns `{MONOREPO_SENTINEL}`
-        because enumerating each workspace's package.json multiplies API cost
-        and risks dropping legit dependents.
+        roots (a non-empty `workspaces` field), tries `pnpm-lock.yaml` first
+        — its `importers` map gives every workspace's direct deps in one
+        HTTP fetch, which lets the fan-out filter drop transitive-only hits
+        from lockfile-derived SBOMs (e.g. an iOS-tooling dep four levels deep
+        under Expo). Falls back to `{MONOREPO_SENTINEL}` when the lockfile
+        is absent or unparseable so callers still treat the repo as
+        "verified, don't filter".
         """
         payload = self._fetch_pkg_json(repo_url=repo_url)
         if payload is None:
@@ -219,14 +288,18 @@ class GithubRepoSource:
 
         # Monorepo detection: `workspaces` may be an array or an object with
         # a `packages` array (Yarn/Lerna style). Either form means this is a
-        # monorepo root — give benefit of doubt and verify-as-passed.
+        # monorepo root.
         ws = payload.get("workspaces")
-        if isinstance(ws, list) and ws:
+        is_monorepo = (isinstance(ws, list) and bool(ws)) or (
+            isinstance(ws, dict)
+            and isinstance(ws.get("packages"), list)
+            and bool(ws["packages"])
+        )
+        if is_monorepo:
+            lockfile_deps = self._fetch_pnpm_lockfile_deps(repo_url=repo_url)
+            if lockfile_deps is not None:
+                return lockfile_deps
             return {MONOREPO_SENTINEL}
-        if isinstance(ws, dict):
-            pkgs = ws.get("packages")
-            if isinstance(pkgs, list) and pkgs:
-                return {MONOREPO_SENTINEL}
 
         deps = payload.get("dependencies")
         dev_deps = payload.get("devDependencies")
