@@ -28,6 +28,19 @@ uv run biibaa run --top 20
 
 Briefs land in `data/briefs/<project>/<yyyy-mm-dd>.md`.
 
+## Configuration
+
+Copy `env.sample` to `.env` (gitignored) and fill in what you need.
+
+- `GITHUB_TOKEN` — required for non-trivial runs (REST rate limits bite
+  fast). Falls back to `gh auth token` if the `gh` CLI is logged in.
+- `OSO_API_KEY` — optional. With the `pyoso` extra installed
+  (`uv sync --extra pyoso`), enables the tiered dependents source backed
+  by OSO's `sboms_v0` join. Without it, ecosyste.ms is the sole backend.
+- TLS / proxy vars (`BIIBAA_INSECURE_TLS`, `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY`,
+  `HTTP_PROXY`) — see [Behind a MITM proxy](#behind-a-mitm-proxy) below.
+
 ## What you'll see
 
 **Every brief points at one specific repo a contributor can PR.**
