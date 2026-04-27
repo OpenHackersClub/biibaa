@@ -14,6 +14,9 @@ dependencies = [
     "structlog>=24.1",
 ]
 
+[project.optional-dependencies]
+pyoso = ["pyoso>=0.9"]
+
 [project.scripts]
 biibaa = "biibaa.cli.main:app"
 

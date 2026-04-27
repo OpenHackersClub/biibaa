@@ -81,3 +81,51 @@ def test_unparseable_repo_url_returns_none() -> None:
     src = GithubRepoSource(token="x", client=httpx.Client())
     assert src.last_merged_pr_at(repo_url="not-a-url") is None
     assert src.last_merged_pr_at(repo_url="https://gitlab.com/x/y") is None
+
+
+def test_is_archived_true(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/graphql",
+        method="POST",
+        json={
+            "data": {
+                "repository": {
+                    "isArchived": True,
+                    "pullRequests": {"nodes": []},
+                }
+            }
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    assert src.is_archived(repo_url="https://github.com/old/lib") is True
+
+
+def test_is_archived_false_on_unreachable_repo(httpx_mock: HTTPXMock) -> None:
+    """Transient failures must NOT spuriously mark a repo as archived."""
+    httpx_mock.add_response(
+        url="https://api.github.com/graphql", method="POST", status_code=502
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    assert src.is_archived(repo_url="https://github.com/example/repo") is False
+
+
+def test_fetch_meta_shares_cache_across_methods(httpx_mock: HTTPXMock) -> None:
+    """One HTTP call should serve both is_archived and last_merged_pr_at."""
+    httpx_mock.add_response(
+        url="https://api.github.com/graphql",
+        method="POST",
+        json={
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "pullRequests": {
+                        "nodes": [{"mergedAt": "2026-04-01T00:00:00Z"}]
+                    },
+                }
+            }
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    src.is_archived(repo_url="https://github.com/foo/bar")
+    src.last_merged_pr_at(repo_url="https://github.com/foo/bar")
+    # No second mock registered — pytest-httpx fails teardown if a 2nd call fired.

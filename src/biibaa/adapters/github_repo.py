@@ -1,13 +1,19 @@
 """GitHub repo activity adapter — fetches the most-recently-merged PR
-timestamp via the v4 GraphQL API. Used as a confidence signal for biibaa
-briefs: a repo whose maintainers merged something last week is far more
-likely to merge a drive-by contribution than one frozen for two years."""
+timestamp and the repo's archived flag via the v4 GraphQL API. Both signals
+are pulled in one query and cached together so `last_merged_pr_at` and
+`is_archived` callers share a single round-trip per repo.
+
+- `last_merged_pr_at` feeds the confidence axis (a repo whose maintainers
+  merged something last week is far more likely to merge a drive-by
+  contribution than one frozen for two years).
+- `is_archived` is a hard disqualifier — archived repos won't accept PRs."""
 
 from __future__ import annotations
 
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
@@ -20,14 +26,21 @@ log = structlog.get_logger(__name__)
 GRAPHQL_URL = "https://api.github.com/graphql"
 
 _QUERY = """
-query LastMergedPR($owner: String!, $name: String!) {
+query RepoMeta($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
+    isArchived
     pullRequests(states: MERGED, orderBy: {field: UPDATED_AT, direction: DESC}, first: 1) {
       nodes { mergedAt }
     }
   }
 }
 """
+
+
+@dataclass(frozen=True)
+class RepoMeta:
+    last_merged_pr_at: datetime | None
+    is_archived: bool
 
 _REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/?#]+?)(?:\.git)?/?$")
 
@@ -65,7 +78,7 @@ class GithubRepoSource:
     ) -> None:
         self._token = _resolve_token(token)
         self._client = client or make_client(timeout=15.0)
-        self._cache: dict[tuple[str, str], datetime | None] = {}
+        self._cache: dict[tuple[str, str], RepoMeta | None] = {}
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json"}
@@ -73,7 +86,7 @@ class GithubRepoSource:
             h["Authorization"] = f"Bearer {self._token}"
         return h
 
-    def last_merged_pr_at(self, *, repo_url: str) -> datetime | None:
+    def fetch_meta(self, *, repo_url: str) -> RepoMeta | None:
         parsed = _parse_repo_url(repo_url)
         if not parsed:
             return None
@@ -100,18 +113,28 @@ class GithubRepoSource:
             self._cache[parsed] = None
             return None
 
-        nodes = (
-            ((payload.get("data") or {}).get("repository") or {})
-            .get("pullRequests", {})
-            .get("nodes")
-            or []
+        repo = ((payload.get("data") or {}).get("repository")) or {}
+        nodes = repo.get("pullRequests", {}).get("nodes") or []
+        merged_at: datetime | None = None
+        if nodes and nodes[0].get("mergedAt"):
+            merged_at = datetime.fromisoformat(
+                nodes[0]["mergedAt"].replace("Z", "+00:00")
+            )
+        meta = RepoMeta(
+            last_merged_pr_at=merged_at, is_archived=bool(repo.get("isArchived"))
         )
-        if not nodes or not nodes[0].get("mergedAt"):
-            self._cache[parsed] = None
-            return None
-        merged_at = datetime.fromisoformat(nodes[0]["mergedAt"].replace("Z", "+00:00"))
-        self._cache[parsed] = merged_at
-        return merged_at
+        self._cache[parsed] = meta
+        return meta
+
+    def last_merged_pr_at(self, *, repo_url: str) -> datetime | None:
+        meta = self.fetch_meta(repo_url=repo_url)
+        return meta.last_merged_pr_at if meta else None
+
+    def is_archived(self, *, repo_url: str) -> bool:
+        meta = self.fetch_meta(repo_url=repo_url)
+        # Unknown / unreachable repos are NOT treated as archived — better to
+        # over-include than silently drop a project on a transient API blip.
+        return bool(meta and meta.is_archived)
 
     def close(self) -> None:
         self._client.close()

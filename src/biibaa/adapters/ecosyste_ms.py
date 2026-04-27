@@ -10,28 +10,24 @@ endpoint, with no auth required.
 
 Returns up to K dependents ranked by lifetime npm downloads, each with
 the repository_url we need to make a brief actionable.
+
+Wrapped with a circuit breaker because the highest-signal packages
+(lodash, debug, axios, ...) reliably 500 on this endpoint — without
+the breaker we hammer a known-broken host every run.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import httpx
 import structlog
 
+from biibaa.adapters._circuit import CircuitBreaker
 from biibaa.adapters._http import make_client
+from biibaa.ports.dependents import Dependent
 
 log = structlog.get_logger(__name__)
 
 ECOSYSTEMS_BASE = "https://packages.ecosyste.ms/api/v1/registries/npmjs.org/packages"
-
-
-@dataclass(frozen=True)
-class Dependent:
-    name: str
-    purl: str
-    repo_url: str | None
-    lifetime_downloads: int | None
 
 
 def _purl(name: str) -> str:
@@ -41,12 +37,28 @@ def _purl(name: str) -> str:
 class EcosystemsSource:
     name = "ecosyste_ms_dependents"
 
-    def __init__(self, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: httpx.Client | None = None,
+        breaker: CircuitBreaker[list[Dependent]] | None = None,
+    ) -> None:
         # Tight timeout: many popular-package endpoints 500 instantly,
         # but a few hang with no response — don't let those starve the run.
         self._client = client or make_client(timeout=8.0)
+        self._breaker = breaker or CircuitBreaker[list[Dependent]](
+            name="ecosyste_ms",
+            failure_threshold=3,
+            reset_after_seconds=300.0,
+        )
 
     def fetch_dependents(self, *, package: str, top_k: int = 10) -> list[Dependent]:
+        return self._breaker.call(
+            lambda: self._fetch(package=package, top_k=top_k),
+            fallback=[],
+        )
+
+    def _fetch(self, *, package: str, top_k: int) -> list[Dependent]:
         url = f"{ECOSYSTEMS_BASE}/{package}/dependent_packages"
         params = {"sort": "downloads", "order": "desc", "per_page": top_k}
         try:
