@@ -37,7 +37,7 @@ uv sync
 uv run biibaa run --top 20
 ```
 
-Briefs land in `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md` (e.g. `data/briefs/npm/reduxjs__react-redux/2026-04-27.md`). Each file is a Markdown body with structured YAML frontmatter (`schema: biibaa-brief/1`) consumable by the static site.
+Briefs land in `data/briefs/<ecosystem>/<slug>.md` (e.g. `data/briefs/npm/reduxjs__react-redux.md`). Each run overwrites the previous brief for a project; ineligible projects drop out of the directory automatically. Each file is a Markdown body with structured YAML frontmatter (`schema: biibaa-brief/1`) consumable by the static site.
 
 ### CLI flags
 
@@ -99,7 +99,7 @@ src/biibaa/
 site/               # Astro 5 + Tailwind v4 static site (Cloudflare Pages)
 tests/              # pytest + pytest-httpx unit + adapter tests
 data/
-  briefs/<eco>/<slug>/<date>.md
+  briefs/<eco>/<slug>.md
   dependents_cache.sqlite
 .github/workflows/deploy-site.yml
 ```

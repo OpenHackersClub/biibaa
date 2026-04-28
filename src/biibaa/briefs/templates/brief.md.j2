@@ -20,7 +20,11 @@
 - **Replace**: `{{ opp.replacement.from_purl | replace('pkg:npm/', '') }}` → {% for t in opp.replacement.to_purls %}`{{ t | replace('pkg:npm/', '') }}`{{ ', ' if not loop.last else '' }}{% endfor %}
 
 - **Effort band**: {{ opp.replacement.effort }}
-- **Evidence**: e18e [module-replacements](https://github.com/e18e/module-replacements) · manifest `{{ opp.replacement.evidence.manifest }}`
+- **Evidence**: e18e [module-replacements](https://github.com/e18e/module-replacements) · manifest [{{ opp.replacement.evidence.manifest }}{{ ('#L' ~ opp.replacement.evidence.manifest_line) if opp.replacement.evidence.manifest_line else '' }}]({{ opp.replacement.evidence.citation_url or ('https://github.com/e18e/module-replacements/blob/main/manifests/' ~ opp.replacement.evidence.manifest) }})
+{% if opp.dependency_locations %}
+- **Found in**: {% for loc in opp.dependency_locations %}[{{ loc.file }}{{ ('#L' ~ loc.line) if loc.line else '' }}]({{ loc.url }}){{ ', ' if not loop.last else '' }}{% endfor %}
+
+{% endif %}
 {% endif %}
 - **Effort score**: {{ "%.0f"|format(opp.effort) }} / 100 (high = easy)
 - **Impact score**: {{ "%.0f"|format(opp.impact) }} / 100

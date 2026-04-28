@@ -27,12 +27,20 @@ from biibaa.adapters.github_advisories import GithubAdvisorySource
 from biibaa.adapters.github_repo import (
     MONOREPO_SENTINEL,
     NOT_JS_SENTINEL,
+    DepLocation,
     GithubRepoSource,
 )
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.adapters.npm_registry import NpmRegistrySource
 from biibaa.briefs.render import write_brief
-from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
+from biibaa.domain import (
+    Advisory,
+    Brief,
+    DependencyLocation,
+    Opportunity,
+    Project,
+    Replacement,
+)
 from biibaa.ports.dependents import Dependent, DependentsSource
 from biibaa.scoring import (
     REPLACEMENT_EFFORT_SCORE,
@@ -54,6 +62,12 @@ class _ProjectFindings:
     advisories: list[Advisory] = field(default_factory=list)
     replacements: list[Replacement] = field(default_factory=list)
     repo_url: str | None = None
+    # Per-replacement.from_purl → adapter-level locations within the
+    # dependent's repo. Built during fan-out (one call per dependent
+    # reusing the cached package.json text), then converted to
+    # `DependencyLocation` records with pinned-SHA URLs at opportunity
+    # construction time.
+    locations_by_from_purl: dict[str, list[DepLocation]] = field(default_factory=dict)
 
 
 def _project_name_from_purl(purl: str) -> str:
@@ -126,8 +140,38 @@ def _vuln_opportunity(
     )
 
 
+def _build_dependency_locations(
+    *,
+    repo_url: str | None,
+    head_sha: str | None,
+    locations: list[DepLocation],
+) -> list[DependencyLocation]:
+    """Convert adapter-level locations into pinned-SHA permalinks.
+
+    Falls back to `HEAD` when the SHA is unknown (e.g. GraphQL miss). Repos
+    without a known repo_url get no locations — we have no base for the
+    permalink. Empty list when there are no input locations.
+    """
+    if not repo_url or not locations:
+        return []
+    base = repo_url.rstrip("/")
+    ref = head_sha or "HEAD"
+    out: list[DependencyLocation] = []
+    for loc in locations:
+        url = f"{base}/blob/{ref}/{loc.file}"
+        if loc.line is not None:
+            url = f"{url}#L{loc.line}"
+        out.append(DependencyLocation(file=loc.file, line=loc.line, url=url))
+    return out
+
+
 def _replacement_opportunity(
-    *, replacement: Replacement, project: Project, run_at: datetime
+    *,
+    replacement: Replacement,
+    project: Project,
+    run_at: datetime,
+    head_sha: str | None,
+    locations: list[DepLocation],
 ) -> Opportunity:
     pop = popularity(downloads_weekly=project.downloads_weekly, stars=project.stars)
     is_native = any("<native>" in p for p in replacement.to_purls)
@@ -137,6 +181,9 @@ def _replacement_opportunity(
     conf = confidence(last_pr_merged_at=project.last_pr_merged_at, now=run_at)
     score = final_score(impact_value=imp, effort_value=eff, confidence_value=conf)
     kind = "perf-replacement" if replacement.axis == "perf" else "dep-replacement"
+    dep_locations = _build_dependency_locations(
+        repo_url=project.repo_url, head_sha=head_sha, locations=locations
+    )
     return Opportunity(
         id=str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"{project.purl}|{replacement.id}")
@@ -144,6 +191,7 @@ def _replacement_opportunity(
         kind=kind,
         project=project,
         replacement=replacement,
+        dependency_locations=dep_locations,
         impact=imp,
         effort=eff,
         score=score,
@@ -241,7 +289,10 @@ def _fan_out_dependents(
     fanout_top_n: int,
     dependents_per_replacement: int,
     repo_src: GithubRepoSource | None = None,
-) -> list[tuple[Replacement, Dependent]]:
+) -> tuple[
+    list[tuple[Replacement, Dependent]],
+    dict[tuple[str, str], list[DepLocation]],
+]:
     """For the most-popular replacement candidates, pull top dependents.
 
     `fanout_top_n` caps how many e18e mappings we fan out from (ranked by
@@ -272,8 +323,9 @@ def _fan_out_dependents(
         for d in deps:
             candidates.append((r, d))
 
+    locations: dict[tuple[str, str], list[DepLocation]] = {}
     if repo_src is None:
-        return candidates
+        return candidates, locations
 
     out: list[tuple[Replacement, Dependent]] = []
     kept = dropped = unknown = monorepo = not_js = 0
@@ -309,6 +361,14 @@ def _fan_out_dependents(
         if from_name in direct:
             kept += 1
             out.append((rep, dep))
+            # Reuse the cached package.json text / lockfile parse to grab
+            # source locations now — once we leave this loop we'd otherwise
+            # have to rediscover which (rep, dep) pairs are paired up.
+            found = repo_src.fetch_dependency_locations(
+                repo_url=dep.repo_url, names={from_name}
+            )
+            if locs := found.get(from_name):
+                locations[(dep.purl, rep.from_purl)] = locs
             continue
         log.info(
             "fanout.dropped_transitive_only",
@@ -325,7 +385,7 @@ def _fan_out_dependents(
         monorepo=monorepo,
         not_js=not_js,
     )
-    return out
+    return out, locations
 
 
 def run(
@@ -366,8 +426,9 @@ def run(
         log.info("pipeline.replacements_fetched", count=len(replacements))
 
     fanouts: list[tuple[Replacement, Dependent]] = []
+    fanout_locations: dict[tuple[str, str], list[DepLocation]] = {}
     if eco_src and replacements:
-        fanouts = _fan_out_dependents(
+        fanouts, fanout_locations = _fan_out_dependents(
             replacements=replacements,
             eco_src=eco_src,
             downloads_src=downloads_src,
@@ -390,12 +451,15 @@ def run(
         f.replacements.append(rep)
         if dep.repo_url and not f.repo_url:
             f.repo_url = dep.repo_url
+        if locs := fanout_locations.get((dep.purl, rep.from_purl)):
+            f.locations_by_from_purl.setdefault(rep.from_purl, locs)
 
     # Hydrate weekly downloads for every project we'll render.
     package_names = [_project_name_from_purl(p) for p in by_project]
     bulk_downloads = downloads_src.weekly_downloads_bulk(packages=package_names)
 
     projects: dict[str, Project] = {}
+    head_shas: dict[str, str | None] = {}
     for purl, findings in by_project.items():
         name = _project_name_from_purl(purl)
         meta = (
@@ -403,6 +467,7 @@ def run(
             if findings.repo_url
             else None
         )
+        head_shas[purl] = meta.head_sha if meta else None
         # Only read bench info for replacement-driven projects: fan-out has
         # already fetched their package.json so this is a free cache hit.
         # Skipping vuln-only projects keeps the HTTP budget unchanged.
@@ -444,9 +509,16 @@ def run(
             opps.append(_vuln_opportunity(advisory=adv, project=project, run_at=run_at))
         # Per-dependent: dedupe replacements by from_purl so the same swap
         # only appears once even if the dependent showed up in two manifests.
+        head_sha = head_shas.get(purl)
         for rep in _dedupe_replacements(findings.replacements):
             opps.append(
-                _replacement_opportunity(replacement=rep, project=project, run_at=run_at)
+                _replacement_opportunity(
+                    replacement=rep,
+                    project=project,
+                    run_at=run_at,
+                    head_sha=head_sha,
+                    locations=findings.locations_by_from_purl.get(rep.from_purl, []),
+                )
             )
 
         if not opps:
@@ -479,9 +551,21 @@ def run(
 
     paths: list[Path] = []
     for brief in top:
-        paths.append(
-            write_brief(brief, output_dir / brief.project.ecosystem / brief.slug)
-        )
+        paths.append(write_brief(brief, output_dir / brief.project.ecosystem))
+
+    # Sweep stale briefs: any *.md in this ecosystem's dir that we didn't
+    # write this run is from a project no longer eligible (or no longer in
+    # the top-N). Without this step the on-disk set would only ever grow.
+    eco_dir = output_dir / ecosystem
+    if eco_dir.is_dir():
+        kept = {p.resolve() for p in paths}
+        removed = 0
+        for stale in eco_dir.glob("*.md"):
+            if stale.resolve() not in kept:
+                stale.unlink()
+                removed += 1
+        if removed:
+            log.info("pipeline.briefs_swept", removed=removed, ecosystem=ecosystem)
 
     advisory_src.close()
     downloads_src.close()

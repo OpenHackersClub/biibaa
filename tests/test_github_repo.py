@@ -129,3 +129,99 @@ def test_fetch_meta_shares_cache_across_methods(httpx_mock: HTTPXMock) -> None:
     src.is_archived(repo_url="https://github.com/foo/bar")
     src.last_merged_pr_at(repo_url="https://github.com/foo/bar")
     # No second mock registered — pytest-httpx fails teardown if a 2nd call fired.
+
+
+def test_fetch_meta_returns_head_sha(httpx_mock: HTTPXMock) -> None:
+    """The default-branch HEAD oid is needed to build pinned permalinks for
+    dependency-location citations — without it, links rot when HEAD moves."""
+    httpx_mock.add_response(
+        url="https://api.github.com/graphql",
+        method="POST",
+        json={
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "defaultBranchRef": {"target": {"oid": "deadbeef" * 5}},
+                    "pullRequests": {"nodes": []},
+                }
+            }
+        },
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    meta = src.fetch_meta(repo_url="https://github.com/foo/bar")
+    assert meta is not None
+    assert meta.head_sha == "deadbeef" * 5
+
+
+def test_fetch_dependency_locations_in_single_package_repo(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """For a non-monorepo, locations carry the line number of each dep's
+    declaration in the root package.json."""
+    pkg_json = (
+        '{\n'
+        '  "name": "demo",\n'
+        '  "dependencies": {\n'
+        '    "moment": "^2.0.0",\n'
+        '    "lodash": "^4.0.0"\n'
+        '  },\n'
+        '  "devDependencies": {\n'
+        '    "vitest": "^1.0.0"\n'
+        '  }\n'
+        '}\n'
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        text=pkg_json,
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    out = src.fetch_dependency_locations(
+        repo_url="https://github.com/foo/bar", names={"moment", "vitest", "missing"}
+    )
+    assert set(out.keys()) == {"moment", "vitest"}
+    moment = out["moment"][0]
+    assert moment.file == "package.json"
+    assert moment.line == 4
+    vitest = out["vitest"][0]
+    assert vitest.line == 8
+    assert "missing" not in out
+
+
+def test_fetch_dependency_locations_for_monorepo_workspaces(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Monorepos return one location per workspace `package.json` declaring
+    the dep. Line numbers are unknown (would cost a fetch per workspace)."""
+    pkg_json = (
+        '{\n'
+        '  "name": "monorepo-root",\n'
+        '  "private": true,\n'
+        '  "workspaces": ["packages/*"]\n'
+        '}\n'
+    )
+    pnpm_lock = (
+        "lockfileVersion: '9.0'\n"
+        "importers:\n"
+        "  packages/api:\n"
+        "    dependencies:\n"
+        "      moment: 2.0.0\n"
+        "  packages/web:\n"
+        "    dependencies:\n"
+        "      moment: 2.0.0\n"
+        "      react: 18.0.0\n"
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/package.json",
+        text=pkg_json,
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/foo/bar/HEAD/pnpm-lock.yaml",
+        text=pnpm_lock,
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    out = src.fetch_dependency_locations(
+        repo_url="https://github.com/foo/bar", names={"moment"}
+    )
+    files = sorted(loc.file for loc in out["moment"])
+    assert files == ["packages/api/package.json", "packages/web/package.json"]
+    assert all(loc.line is None for loc in out["moment"])

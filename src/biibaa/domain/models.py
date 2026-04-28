@@ -55,12 +55,29 @@ class Replacement(_Frozen):
     evidence: dict[str, str | int | float] = Field(default_factory=dict)
 
 
+class DependencyLocation(_Frozen):
+    """Where a flagged dependency is declared in the dependent's source.
+
+    `file` is the repo-relative path (e.g. `package.json` or
+    `packages/foo/package.json`). `line` is 1-based; `None` when we know
+    the file but not the exact line (monorepo workspaces parsed from
+    `pnpm-lock.yaml`, where we'd have to fetch each workspace's
+    `package.json` to find the line). `url` is a permalink pinned to a
+    commit SHA so the link doesn't rot when HEAD moves.
+    """
+
+    file: str
+    line: int | None = None
+    url: str
+
+
 class Opportunity(_Frozen):
     id: str
     kind: OpportunityKind
     project: Project
     advisory: Advisory | None = None
     replacement: Replacement | None = None
+    dependency_locations: list[DependencyLocation] = Field(default_factory=list)
     impact: float
     effort: float
     score: float

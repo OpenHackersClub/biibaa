@@ -3,7 +3,7 @@
 > Data engineering pipeline that surfaces low-effort, high-impact improvements to open source projects across **vulnerabilities**, **dependency weight**, and **performance**, then emits triage briefs.
 
 > **Status (2026-04-28)** — MVP is built end-to-end (`biibaa run` produces ranked briefs at
-> `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md`) and a static Astro site renders them.
+> `data/briefs/<ecosystem>/<slug>.md`, overwriting prior runs in place) and a static Astro site renders them.
 > Sources, storage, scoring, and pipeline sections below tag each item ✅ **built**, ⚠️ **partial**, or
 > ❌ **deferred**. SQLMesh / DuckDB warehouse (§8, §9) is deferred — current pipeline is in-memory
 > Python. See [README.md](README.md) for the operator-facing summary and the open issues for the
@@ -130,7 +130,7 @@ deps fan-out ─┘                                  (replacement quota = top_n 
 6. **Eligibility filter** — drop archived repos and packages below `--min-weekly-downloads` (default 50K).
 7. **Score** — vuln + replacement opportunities per project (§6); cap per-project at `max_opps_per_project=6`; head opportunity defines the project's score.
 8. **Axis-quota top-N** — `_select_with_axis_quota` reserves at least `top_n // 3` slots for replacement-led briefs so vuln-heavy ranking doesn't starve them; spillover refills the other axis.
-9. **Render** — Jinja2 Markdown body + YAML frontmatter (`schema: biibaa-brief/1`); written to `data/briefs/<ecosystem>/<slug>/<yyyy-mm-dd>.md`.
+9. **Render** — Jinja2 Markdown body + YAML frontmatter (`schema: biibaa-brief/1`); written to `data/briefs/<ecosystem>/<slug>.md`. Each run overwrites the previous brief for a project, so projects that drop out of eligibility disappear from the directory on the next run.
 
 The whole pipeline runs in-process. There is no `data/raw/` landing today.
 
@@ -290,7 +290,7 @@ citations:
 
 ```
 data/
-  briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md   # frontmatter + body
+  briefs/<ecosystem>/<slug>.md                    # frontmatter + body, overwritten per run
   dependents_cache.sqlite                         # tiered fan-out cache, key (system, name, iso_week)
 ```
 
@@ -368,7 +368,7 @@ biibaa/
   site/                           # Astro + Tailwind v4 SSG (briefs renderer, Cloudflare Pages)
   tests/                          # pytest + pytest-httpx unit + adapter tests
   data/                           # gitignored; created at runtime
-    briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md
+    briefs/<ecosystem>/<slug>.md
     dependents_cache.sqlite
   .github/workflows/deploy-site.yml
 ```
@@ -402,7 +402,7 @@ biibaa/
 
 - **Schedule**: local CLI only — `uv run biibaa run --top 20`. No cron yet for the pipeline.
 - **CI**: `.github/workflows/deploy-site.yml` builds `site/` and deploys to Cloudflare Pages on every push to `main` (paths: `site/**`, `data/briefs/**`).
-- **Idempotency**: same-day `biibaa run` re-fetches sources and overwrites the day's `data/briefs/<eco>/<slug>/<date>.md` deterministically. Dependents fan-out is cached weekly in `data/dependents_cache.sqlite`. No cross-run opportunity state.
+- **Idempotency**: every `biibaa run` re-fetches sources and overwrites `data/briefs/<eco>/<slug>.md` deterministically. Projects that fall out of eligibility on a later run drop off disk on the next run (the renderer never appends, only overwrites the eligible set). Dependents fan-out is cached weekly in `data/dependents_cache.sqlite`. No cross-run opportunity state.
 - **Observability**: `structlog` for ingest. Key events: `pipeline.start`, `pipeline.advisories_fetched`, `advisory.outdated_filter`, `fanout.dependents`, `fanout.direct_deps_filter`, `pipeline.eligibility_filter`, `pipeline.briefs_selected`, `pipeline.done`.
 - **Rate limiting**: per-source budgets — GitHub: 5000/hr w/ PAT (GHSA REST + GraphQL + raw `package.json`/lockfile fetches); npm bulk-downloads: 128 packages/request, 0.5s between batches, exponential backoff on 429; ecosyste.ms + pyoso both wrapped in `_circuit.CircuitBreaker` (3 failures → 5-minute open, fall through to fallback / `[]`).
 - **TLS / proxy**: `_http.make_client` honors `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`; auto-disables verification when `HTTPS_PROXY` points at a loopback (e.g. `ccli net start`); `BIIBAA_INSECURE_TLS=1` forces it off.

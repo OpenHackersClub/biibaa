@@ -4,16 +4,9 @@ import Base from "../layouts/Base.astro";
 
 const all = await getCollection("briefs");
 
-// Latest brief per slug — multiple dates exist for the same project; the
-// triage table only shows the freshest.
-const latestBySlug = new Map<string, (typeof all)[number]>();
-for (const b of all) {
-  const existing = latestBySlug.get(b.data.slug);
-  if (!existing || b.data.date > existing.data.date) {
-    latestBySlug.set(b.data.slug, b);
-  }
-}
-const briefs = Array.from(latestBySlug.values()).sort(
+// One file per slug now (briefs/render.py overwrites <eco>/<slug>.md each
+// run), so no dedupe pass is needed — sort straight by score.
+const briefs = [...all].sort(
   (a, b) => b.data.score.total - a.data.score.total,
 );
 
@@ -62,7 +55,7 @@ const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
 ---
 
 <Base title="biibaa">
-  <span slot="header-right">{rows.length} briefs · {all.length} total dated</span>
+  <span slot="header-right">{rows.length} briefs</span>
 
   <div
     x-data={`triage(${JSON.stringify({ rows, ecosystems, kinds, tags, columns, labels })})`}

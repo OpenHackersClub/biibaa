@@ -91,6 +91,9 @@ _QUERY = """
 query RepoMeta($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     isArchived
+    defaultBranchRef {
+      target { oid }
+    }
     pullRequests(states: MERGED, orderBy: {field: UPDATED_AT, direction: DESC}, first: 1) {
       nodes { mergedAt }
     }
@@ -103,6 +106,16 @@ query RepoMeta($owner: String!, $name: String!) {
 class RepoMeta:
     last_merged_pr_at: datetime | None
     is_archived: bool
+    head_sha: str | None = None
+
+
+@dataclass(frozen=True)
+class DepLocation:
+    """Adapter-level location record (no permalink — pipeline builds the URL
+    once it has the repo + sha + file). `line` is 1-based or None."""
+
+    file: str
+    line: int | None = None
 
 _REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/?#]+?)(?:\.git)?/?$")
 
@@ -144,6 +157,10 @@ class GithubRepoSource:
         # Caches the parsed package.json so fetch_direct_deps and bench_info
         # share a single HTTP round-trip per repo. None = fetch/parse failed.
         self._pkg_cache: dict[tuple[str, str], dict | None] = {}
+        # Raw text of the same package.json — kept alongside the parsed dict
+        # so fetch_dependency_locations can find the line where each dep is
+        # declared without a second fetch.
+        self._pkg_text_cache: dict[tuple[str, str], str | None] = {}
         # Tracks whether package.json was definitively absent (404) vs failed
         # for some other reason (parse error, network blip). Lets the
         # transitive-filter distinguish "not a JS project" from "transient".
@@ -152,6 +169,12 @@ class GithubRepoSource:
         # from `pnpm-lock.yaml`. None = fetch or parse failed (caller falls
         # back to MONOREPO_SENTINEL).
         self._lockfile_cache: dict[tuple[str, str], set[str] | None] = {}
+        # Per-name workspace paths from the same lockfile parse, e.g.
+        # `{"lodash": ["packages/api", "packages/web"]}`. Populated lazily
+        # alongside `_lockfile_cache`.
+        self._lockfile_locations_cache: dict[
+            tuple[str, str], dict[str, list[str]] | None
+        ] = {}
         # Caches whether ANY root lockfile exists. None = couldn't tell
         # (transient error). True/False are definitive.
         self._has_root_lockfile_cache: dict[tuple[str, str], bool | None] = {}
@@ -196,8 +219,13 @@ class GithubRepoSource:
             merged_at = datetime.fromisoformat(
                 nodes[0]["mergedAt"].replace("Z", "+00:00")
             )
+        head_sha: str | None = None
+        if (target := (repo.get("defaultBranchRef") or {}).get("target")):
+            head_sha = target.get("oid")
         meta = RepoMeta(
-            last_merged_pr_at=merged_at, is_archived=bool(repo.get("isArchived"))
+            last_merged_pr_at=merged_at,
+            is_archived=bool(repo.get("isArchived")),
+            head_sha=head_sha,
         )
         self._cache[parsed] = meta
         return meta
@@ -231,10 +259,12 @@ class GithubRepoSource:
             r = self._client.get(url, headers=self._headers())
             if r.status_code == 404:
                 self._pkg_cache[parsed] = None
+                self._pkg_text_cache[parsed] = None
                 self._pkg_missing[parsed] = True
                 return None
             r.raise_for_status()
-            payload = json.loads(r.text)
+            text = r.text
+            payload = json.loads(text)
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
             log.warning(
                 "github_repo.fetch_pkg_failed",
@@ -242,13 +272,16 @@ class GithubRepoSource:
                 error=str(e),
             )
             self._pkg_cache[parsed] = None
+            self._pkg_text_cache[parsed] = None
             self._pkg_missing[parsed] = False
             return None
         if not isinstance(payload, dict):
             self._pkg_cache[parsed] = None
+            self._pkg_text_cache[parsed] = None
             self._pkg_missing[parsed] = False
             return None
         self._pkg_cache[parsed] = payload
+        self._pkg_text_cache[parsed] = text
         self._pkg_missing[parsed] = False
         return payload
 
@@ -308,23 +341,30 @@ class GithubRepoSource:
             return None
         if not isinstance(doc, dict):
             self._lockfile_cache[parsed] = None
+            self._lockfile_locations_cache[parsed] = None
             return None
         importers = doc.get("importers")
         if not isinstance(importers, dict):
             self._lockfile_cache[parsed] = None
+            self._lockfile_locations_cache[parsed] = None
             return None
         names: set[str] = set()
-        for imp in importers.values():
+        per_name: dict[str, list[str]] = {}
+        for ws_path, imp in importers.items():
             if not isinstance(imp, dict):
                 continue
             for section in _PNPM_DEP_SECTIONS:
                 m = imp.get(section)
                 if isinstance(m, dict):
-                    names |= set(m.keys())
+                    for dep_name in m:
+                        names.add(dep_name)
+                        per_name.setdefault(dep_name, []).append(str(ws_path))
         if not names:
             self._lockfile_cache[parsed] = None
+            self._lockfile_locations_cache[parsed] = None
             return None
         self._lockfile_cache[parsed] = names
+        self._lockfile_locations_cache[parsed] = per_name
         return names
 
     def fetch_direct_deps(self, *, repo_url: str) -> set[str] | None:
@@ -386,6 +426,70 @@ class GithubRepoSource:
             names |= set(dev_deps.keys())
         return names
 
+    def fetch_dependency_locations(
+        self, *, repo_url: str, names: set[str]
+    ) -> dict[str, list[DepLocation]]:
+        """Return per-name source locations of those deps in the dependent.
+
+        Single-package repos: one `DepLocation(file="package.json", line=N)`
+        per requested name (when found). Line is the 1-based line in the
+        repo's HEAD `package.json` where `"<name>":` is declared under
+        `dependencies` / `devDependencies` / `optionalDependencies` /
+        `peerDependencies`.
+
+        Monorepos with a parseable `pnpm-lock.yaml`: one DepLocation per
+        workspace whose `package.json` declares the dep. `line` is `None`
+        because resolving the per-workspace line would cost an extra HTTP
+        fetch per workspace.
+
+        Names not found in the dependent are absent from the result. Repos
+        without a parseable manifest return `{}`. The pipeline pairs this
+        with the repo's HEAD SHA to build pinned permalinks for the brief.
+        """
+        parsed = _parse_repo_url(repo_url)
+        if not parsed:
+            return {}
+        payload = self._fetch_pkg_json(repo_url=repo_url)
+        if payload is None:
+            return {}
+
+        ws = payload.get("workspaces")
+        is_monorepo = (isinstance(ws, list) and bool(ws)) or (
+            isinstance(ws, dict)
+            and isinstance(ws.get("packages"), list)
+            and bool(ws["packages"])
+        )
+        if is_monorepo:
+            self._fetch_pnpm_lockfile_deps(repo_url=repo_url)
+            per_name = self._lockfile_locations_cache.get(parsed) or {}
+            out: dict[str, list[DepLocation]] = {}
+            for name in names:
+                paths = per_name.get(name)
+                if not paths:
+                    continue
+                # Workspace paths are relative; normalize "" / "." to the
+                # repo-root package.json. Otherwise append `/package.json`.
+                seen: set[str] = set()
+                locs: list[DepLocation] = []
+                for p in paths:
+                    file = (
+                        "package.json"
+                        if p in ("", ".")
+                        else f"{p.rstrip('/')}/package.json"
+                    )
+                    if file in seen:
+                        continue
+                    seen.add(file)
+                    locs.append(DepLocation(file=file, line=None))
+                if locs:
+                    out[name] = locs
+            return out
+
+        text = self._pkg_text_cache.get(parsed)
+        if not text:
+            return {}
+        return _scan_package_json_lines(text, names)
+
     def bench_info(self, *, repo_url: str) -> tuple[bool, str | None]:
         """Detect runnable-benchmark signals in the repo's HEAD package.json.
 
@@ -428,3 +532,49 @@ class GithubRepoSource:
 
     def close(self) -> None:
         self._client.close()
+
+
+# Sections we consider "directly declared" — same set as the lockfile parser
+# above. Restricting the line scan to these blocks avoids false positives
+# from `resolutions`, `overrides`, or string values elsewhere in the file.
+_PKG_DEP_SECTION_RE = re.compile(
+    r'^\s*"(?P<section>dependencies|devDependencies|optionalDependencies|peerDependencies)"\s*:\s*\{',
+    re.MULTILINE,
+)
+
+
+def _scan_package_json_lines(
+    text: str, names: set[str]
+) -> dict[str, list["DepLocation"]]:
+    """Find the line where each requested name is declared in `text`.
+
+    Walks the file once, tracking when we're inside a dependency section
+    (dependencies / devDependencies / optionalDependencies /
+    peerDependencies). Inside a section, the first key matching `names` at
+    that section's depth is recorded. Only the first occurrence per name is
+    kept — duplicate declarations across sections are unusual and the
+    reviewer can find others by reading the file.
+    """
+    found: dict[str, list[DepLocation]] = {}
+    if not names:
+        return found
+    in_section: str | None = None
+    section_depth = 0
+    depth = 0
+    key_re = re.compile(r'^\s*"([^"]+)"\s*:')
+    for i, line in enumerate(text.splitlines(), start=1):
+        if in_section is None:
+            if (m := _PKG_DEP_SECTION_RE.match(line)):
+                in_section = m.group("section")
+                section_depth = line.count("{") - line.count("}")
+                depth = section_depth
+            continue
+        if depth == section_depth and (m := key_re.match(line)):
+            key = m.group(1)
+            if key in names and key not in found:
+                found[key] = [DepLocation(file="package.json", line=i)]
+        depth += line.count("{") - line.count("}")
+        if depth < section_depth:
+            in_section = None
+            section_depth = 0
+    return found

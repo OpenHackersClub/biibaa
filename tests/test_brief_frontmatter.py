@@ -14,7 +14,14 @@ from pathlib import Path
 import yaml
 
 from biibaa.briefs.render import render_brief, write_brief
-from biibaa.domain import Advisory, Brief, Opportunity, Project, Replacement
+from biibaa.domain import (
+    Advisory,
+    Brief,
+    DependencyLocation,
+    Opportunity,
+    Project,
+    Replacement,
+)
 
 _RUN_AT = datetime(2026, 4, 27, 12, 34, 56, tzinfo=UTC)
 
@@ -224,7 +231,9 @@ def test_frontmatter_citations_dedupe_advisory_and_replacement_links() -> None:
     cites = fm["citations"]
     ids = [c["id"] for c in cites]
     assert ids.count("GHSA-1234") == 1
-    assert ids.count("native.json") == 1
+    # Citation id now carries `<manifest>#<from-name>` so multiple replacements
+    # in the same manifest still produce distinct entries.
+    assert ids.count("native.json#x") == 1
     advisory_cite = next(c for c in cites if c["id"] == "GHSA-1234")
     assert advisory_cite["type"] == "advisory"
     assert advisory_cite["url"] == "https://github.com/advisories/GHSA-1234"
@@ -298,7 +307,7 @@ def test_body_omits_repo_link_when_repo_url_unset() -> None:
     assert "**Repo**" not in body
 
 
-def test_write_brief_still_writes_dated_file(tmp_path: Path) -> None:
+def test_write_brief_uses_slug_filename_and_overwrites(tmp_path: Path) -> None:
     proj = _project()
     rep = Replacement(
         id="r1", from_purl="pkg:npm/x", to_purls=["pkg:npm/<native>"],
@@ -308,11 +317,69 @@ def test_write_brief_still_writes_dated_file(tmp_path: Path) -> None:
 
     path = write_brief(brief, tmp_path)
 
-    assert path.name == "2026-04-27.md"
+    assert path.name == "react-redux.md"
     text = path.read_text()
     fm, body = _split_frontmatter(text)
     assert fm["slug"] == "react-redux"
+
+    # Re-running the same brief overwrites in place — no second file.
+    write_brief(brief, tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["react-redux.md"]
     assert "## Top opportunities" in body
+
+
+def test_dependency_locations_render_in_body_and_citations() -> None:
+    """Replacement opportunities surface where the flagged dep is declared
+    in the dependent's source — pinned-SHA permalinks in the body and
+    structured `dependency-location` citations in the frontmatter so the
+    site can show them as cards."""
+    proj = _project()
+    rep = Replacement(
+        id="r1", from_purl="pkg:npm/moment", to_purls=["pkg:npm/date-fns"],
+        axis="bloat", effort="codemod-available",
+        evidence={"manifest": "preferred.json"},
+    )
+    locs = [
+        DependencyLocation(
+            file="package.json",
+            line=42,
+            url="https://github.com/reduxjs/react-redux/blob/abc123/package.json#L42",
+        ),
+        DependencyLocation(
+            file="packages/web/package.json",
+            line=None,
+            url="https://github.com/reduxjs/react-redux/blob/abc123/packages/web/package.json",
+        ),
+    ]
+    opp = Opportunity(
+        id="o1", kind="dep-replacement", project=proj, replacement=rep,
+        dependency_locations=locs,
+        impact=70.0, effort=90.0, score=78.0, dedupe_key="dk1",
+        first_seen_at=_RUN_AT, last_seen_at=_RUN_AT,
+    )
+    brief = _brief([opp], proj)
+
+    fm, body = _split_frontmatter(render_brief(brief))
+
+    # Body shows a "Found in:" line linking each location.
+    assert "**Found in**" in body
+    assert "package.json#L42" in body
+    assert "/blob/abc123/package.json#L42" in body
+    assert "packages/web/package.json" in body
+    # Trim_blocks strips block-tag trailing newlines aggressively — make
+    # sure the **Found in** line still ends with a real newline before the
+    # next bullet (regression test for the locations-glued-to-effort bug).
+    found_idx = body.index("**Found in**")
+    effort_idx = body.index("**Effort score**")
+    assert found_idx < effort_idx
+    between = body[found_idx:effort_idx]
+    assert ")\n" in between, f"line break missing between Found-in and next bullet: {between!r}"
+
+    # Frontmatter citations list both locations; ids include the line anchor
+    # when known, and the bare path when not.
+    cite_locs = [c for c in fm["citations"] if c["type"] == "dependency-location"]
+    cite_ids = sorted(c["id"] for c in cite_locs)
+    assert cite_ids == ["package.json#L42", "packages/web/package.json"]
 
 
 def test_frontmatter_maintainer_activity_handles_unknown() -> None:

@@ -16,6 +16,7 @@ exist they're collapsed into Replacement.to_purls.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -28,6 +29,10 @@ from biibaa.domain import Replacement
 log = structlog.get_logger(__name__)
 
 RAW_BASE = "https://raw.githubusercontent.com/e18e/module-replacements/main/manifests"
+# GitHub blob URL prefix — used to deep-link a from-package's manifest entry
+# (with `#L<line>` anchor) so brief citations point at the exact mapping
+# rather than the whole 5k-line manifest file.
+BLOB_BASE = "https://github.com/e18e/module-replacements/blob/main/manifests"
 
 # (manifest filename, axis to record on emitted Replacements)
 _MANIFESTS: tuple[tuple[str, str], ...] = (
@@ -75,20 +80,21 @@ class E18eReplacementsSource:
     def __init__(self, *, client: httpx.Client | None = None) -> None:
         self._client = client or make_client(timeout=30.0)
 
-    def _load(self, filename: str) -> dict[str, Any]:
+    def _load(self, filename: str) -> tuple[dict[str, Any], str]:
         url = f"{RAW_BASE}/{filename}"
         r = self._client.get(url)
         r.raise_for_status()
-        return r.json()
+        return r.json(), r.text
 
     def fetch(self) -> Iterator[Replacement]:
         for filename, axis in _MANIFESTS:
             log.info("e18e.fetch", manifest=filename, axis=axis)
             try:
-                doc = self._load(filename)
+                doc, raw = self._load(filename)
             except httpx.HTTPError as e:
                 log.warning("e18e.fetch_failed", manifest=filename, error=str(e))
                 continue
+            line_index = _index_mapping_lines(raw)
             mappings: dict[str, dict[str, Any]] = doc.get("mappings", {})
             replacements: dict[str, dict[str, Any]] = doc.get("replacements", {})
             for from_name, mapping in mappings.items():
@@ -107,13 +113,27 @@ class E18eReplacementsSource:
                 ):
                     # No actionable replacement — skip.
                     continue
+                line = line_index.get(from_name)
+                citation_url = (
+                    f"{BLOB_BASE}/{filename}#L{line}"
+                    if line is not None
+                    else f"{BLOB_BASE}/{filename}"
+                )
+                evidence: dict[str, str | int | float] = {
+                    "source": "e18e",
+                    "manifest": filename,
+                    "ids": ",".join(rep_ids),
+                    "citation_url": citation_url,
+                }
+                if line is not None:
+                    evidence["manifest_line"] = line
                 yield Replacement(
                     id=f"e18e:{filename}:{from_name}",
                     from_purl=_purl(from_name),
                     to_purls=[_purl(t) for t in resolved_targets] or [_purl("<native>")],
                     axis=axis,  # type: ignore[arg-type]
                     effort=effort_band,  # type: ignore[arg-type]
-                    evidence={"source": "e18e", "manifest": filename, "ids": ",".join(rep_ids)},
+                    evidence=evidence,
                 )
 
     def close(self) -> None:
@@ -130,3 +150,38 @@ _BAND_RANK: dict[str, int] = {
 
 def _easier(a: str, b: str) -> str:
     return a if _BAND_RANK.get(a, 0) >= _BAND_RANK.get(b, 0) else b
+
+
+# Matches a from-package key inside the `mappings` block: a JSON string at
+# the start of a line (with leading whitespace) followed by `:` and `{`.
+# `re.escape(name)` keeps scoped names like `@scope/name` safe.
+def _mapping_line_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(rf'^\s*"{re.escape(name)}"\s*:\s*\{{', re.MULTILINE)
+
+
+def _index_mapping_lines(raw: str) -> dict[str, int]:
+    """Return `{from_name → 1-based line number}` for every `mappings` key.
+
+    Walks the manifest text line-by-line so we can deep-link each Replacement
+    citation to the exact entry. Stops at the closing `}` of the `mappings`
+    object so a from-name that happens to also be a value (or appears in the
+    `replacements` section) isn't mis-mapped.
+    """
+    result: dict[str, int] = {}
+    in_mappings = False
+    depth = 0
+    key_re = re.compile(r'^\s*"([^"]+)"\s*:\s*\{')
+    for i, line in enumerate(raw.splitlines(), start=1):
+        if not in_mappings:
+            if '"mappings"' in line and ":" in line:
+                in_mappings = True
+                depth = line.count("{") - line.count("}")
+            continue
+        # Match BEFORE updating depth: `"<name>": {` sits at depth 1 even
+        # though the brace on the same line will push depth to 2.
+        if depth == 1 and (m := key_re.match(line)):
+            result[m.group(1)] = i
+        depth += line.count("{") - line.count("}")
+        if depth <= 0:
+            break
+    return result

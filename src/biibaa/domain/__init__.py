@@ -1,6 +1,7 @@
 from biibaa.domain.models import (
     Advisory,
     Brief,
+    DependencyLocation,
     Opportunity,
     OpportunityKind,
     Project,
@@ -10,6 +11,7 @@ from biibaa.domain.models import (
 __all__ = [
     "Advisory",
     "Brief",
+    "DependencyLocation",
     "Opportunity",
     "OpportunityKind",
     "Project",
