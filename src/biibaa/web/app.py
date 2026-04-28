@@ -17,28 +17,42 @@ _HEAD_CSS = """\
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --triage-bg: #0b1020;
-    --triage-surface: #11172a;
-    --triage-surface-2: #19223d;
+    /* Palette inspired by Linear / Vercel dashboards. */
+    --triage-bg: #0a0d1a;
+    --triage-surface: #111526;
+    --triage-surface-2: #181d33;
     --triage-border: rgba(148, 163, 184, 0.12);
-    --triage-text: #e2e8f0;
-    --triage-muted: #94a3b8;
-    --triage-accent: #818cf8;
+    --triage-border-strong: rgba(148, 163, 184, 0.22);
+    --triage-text: #e8ecf3;
+    --triage-text-strong: #f8fafc;
+    --triage-muted: #8b94a8;
+    --triage-accent: #8b8bff;
+    --triage-accent-2: #5eead4;
+    --font-sans: 'Geist', 'Inter', system-ui, -apple-system, 'SF Pro Text', 'Segoe UI', sans-serif;
+    --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Menlo', monospace;
   }
   body {
-    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    background: radial-gradient(1200px 600px at 80% -10%, rgba(129,140,248,0.12), transparent 60%),
-                radial-gradient(900px 500px at -10% 110%, rgba(56,189,248,0.10), transparent 55%),
-                var(--triage-bg) !important;
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(139,139,255,0.13), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(94,234,212,0.09), transparent 55%),
+      var(--triage-bg) !important;
     color: var(--triage-text);
     letter-spacing: -0.005em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   .triage-shell { padding: 16px 20px; }
-  .triage-title { font-weight: 700; letter-spacing: -0.025em; }
-  .triage-subtle { color: var(--triage-muted); }
+  .triage-title {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    color: var(--triage-text-strong);
+  }
+  .triage-subtle { color: var(--triage-muted); letter-spacing: -0.005em; }
   .triage-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
     border: 1px solid var(--triage-border);
@@ -46,33 +60,84 @@ _HEAD_CSS = """\
     padding: 14px 16px;
     backdrop-filter: blur(8px);
   }
-  /* Quasar table polish */
-  .q-table__container { border-radius: 14px; border: 1px solid var(--triage-border); background: var(--triage-surface); }
+  /* Quasar table polish — Linear-ish: dense rows, mono for IDs,
+     tabular numerals so columns align, indigo hover edge. */
+  .q-table__container {
+    border-radius: 14px;
+    border: 1px solid var(--triage-border);
+    background: var(--triage-surface);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.2), 0 12px 32px -16px rgba(0,0,0,0.5);
+  }
   .q-table thead tr th {
     position: sticky; top: 0; z-index: 2;
     background: var(--triage-surface-2) !important;
-    color: var(--triage-text) !important;
-    font-weight: 600; font-size: 12.5px; letter-spacing: 0.02em; text-transform: uppercase;
-    border-bottom: 1px solid var(--triage-border) !important;
+    color: var(--triage-muted) !important;
+    font-family: var(--font-sans);
+    font-weight: 500; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    border-bottom: 1px solid var(--triage-border-strong) !important;
+    padding: 10px 12px !important;
   }
-  .q-table tbody tr { transition: background 120ms ease; }
-  .q-table tbody tr:hover { background: rgba(129,140,248,0.07) !important; cursor: pointer; }
-  .q-table tbody td { border-bottom: 1px solid var(--triage-border) !important; font-size: 13.5px; }
-  .q-table .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; }
-  .q-table__bottom { border-top: 1px solid var(--triage-border); }
+  .q-table tbody tr {
+    transition: background 120ms ease, box-shadow 120ms ease;
+    box-shadow: inset 2px 0 0 transparent;
+  }
+  .q-table tbody tr:hover {
+    background: rgba(139,139,255,0.06) !important;
+    box-shadow: inset 2px 0 0 var(--triage-accent);
+    cursor: pointer;
+  }
+  .q-table tbody td {
+    border-bottom: 1px solid var(--triage-border) !important;
+    color: var(--triage-text) !important;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-feature-settings: "tnum" 1, "ss01" 1;
+    padding: 8px 12px !important;
+  }
+  .q-table .mono { font-family: var(--font-mono); font-size: 12.5px; letter-spacing: -0.01em; }
+  .q-table .q-field__native, .q-table input { color: var(--triage-text) !important; }
+  .q-table__bottom { border-top: 1px solid var(--triage-border); color: var(--triage-muted); }
   /* Sort chips */
   .sort-bar { gap: 8px; flex-wrap: wrap; align-items: center; }
   .sort-chip { cursor: pointer; user-select: none; }
-  /* Markdown preview tweaks */
-  .triage-preview { background: var(--triage-surface); border: 1px solid var(--triage-border); border-radius: 14px; padding: 18px 22px; }
-  .triage-preview h1 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; }
-  .triage-preview h2 { font-size: 1.05rem; font-weight: 600; margin-top: 1rem; color: var(--triage-accent); }
-  .triage-preview h3 { font-size: 0.95rem; font-weight: 600; margin-top: 0.75rem; }
-  .triage-preview a { color: var(--triage-accent); text-decoration: none; }
-  .triage-preview a:hover { text-decoration: underline; }
-  .triage-preview code { background: rgba(148,163,184,0.12); padding: 1px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
+  /* Markdown preview — editorial spacing à la Notion / Linear docs. */
+  .triage-preview {
+    background: var(--triage-surface);
+    border: 1px solid var(--triage-border);
+    border-radius: 14px;
+    padding: 22px 26px;
+    box-shadow: 0 12px 32px -16px rgba(0,0,0,0.5);
+  }
+  .triage-preview h1 {
+    font-family: var(--font-sans);
+    font-size: 1.5rem; font-weight: 700; letter-spacing: -0.03em;
+    margin-bottom: 0.6rem; color: var(--triage-text-strong);
+  }
+  .triage-preview h2 {
+    font-family: var(--font-sans);
+    font-size: 1.05rem; font-weight: 600; letter-spacing: -0.015em;
+    margin-top: 1.2rem; color: var(--triage-accent);
+  }
+  .triage-preview h3 {
+    font-family: var(--font-sans);
+    font-size: 0.95rem; font-weight: 600;
+    margin-top: 0.9rem; color: var(--triage-text-strong);
+  }
+  .triage-preview a { color: var(--triage-accent); text-decoration: none; border-bottom: 1px solid rgba(139,139,255,0.3); }
+  .triage-preview a:hover { border-bottom-color: var(--triage-accent); }
+  .triage-preview code {
+    background: rgba(148,163,184,0.10);
+    border: 1px solid var(--triage-border);
+    padding: 1px 6px; border-radius: 4px;
+    font-family: var(--font-mono); font-size: 0.82em;
+  }
   .triage-preview ul { margin-left: 1.2rem; }
-  .triage-preview li { margin: 0.15rem 0; }
+  .triage-preview li { margin: 0.2rem 0; line-height: 1.55; }
+  .triage-preview p, .triage-preview li, .triage-preview strong { color: var(--triage-text); }
+  .triage-preview p { line-height: 1.6; }
+  .triage-preview hr { border: none; border-top: 1px solid var(--triage-border); margin: 1rem 0; }
+  /* Number columns: right-aligned with tabular numerals + mono for compactness. */
+  .q-table td.text-right { font-variant-numeric: tabular-nums; }
 </style>
 """
 
@@ -147,6 +212,11 @@ def _row_dict(b: BriefRow) -> dict[str, Any]:
 
 
 def build_app(briefs_dir: Path) -> None:
+    # Flip every Quasar component (q-table, q-input, q-select, q-chip, q-menu, …)
+    # into dark mode so their cells/labels inherit light text. Without this the
+    # background painted by our CSS stays dark while Quasar's content layer
+    # renders in its default light palette → unreadable black text.
+    ui.dark_mode().enable()
     ui.add_head_html(_HEAD_CSS)
 
     all_briefs = load_briefs(briefs_dir)
@@ -251,8 +321,8 @@ def build_app(briefs_dir: Path) -> None:
 
     with ui.column().classes("triage-shell w-full gap-3"):
         with ui.row().classes("items-baseline gap-3 w-full"):
-            ui.label("biibaa briefs").classes("triage-title text-3xl")
-            ui.label("· triage").classes("text-2xl triage-subtle")
+            ui.label("biibaa").classes("triage-title text-3xl")
+            ui.label("triage").classes("text-base triage-subtle")
             ui.space()
             ui.label(f"{len(all_briefs)} briefs · {len(by_key)} unique dates").classes(
                 "triage-subtle text-sm"
