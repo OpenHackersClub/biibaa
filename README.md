@@ -2,33 +2,31 @@
 
 ![biibaa](site/biibaa.png)
 
+> ビーバーbiibaa (Beavers) are keystone engineers, transforming simple waterways into thriving wetland ecosystems that sustain biodiversity and climate resilience.
+
 Open source improvement opportunity tracker. Pulls advisory + popularity data
 and emits ranked Markdown briefs of low-effort, high-impact contribution
 targets. See [SPEC.md](SPEC.md) for the full design.
 
 **Live site:** [biibaa.pages.dev](https://biibaa.pages.dev)
 
-## MVP scope
+## What BiiBaa can do
 
-This first cut implements a vertical slice of the spec — enough to deliver the
-acceptance criteria of producing 20 actionable contribution briefs across all
-three opportunity axes (vulnerability, bloat, perf), plus a static site that
-renders them.
+BiiBaa runs a pipeline that ingests advisory and replacement data, scores
+projects by contribution leverage, and writes ranked Markdown briefs.
 
-| Spec area | MVP | Follow-up |
-|---|---|---|
-| Vulnerability source | GHSA REST (unpatched-only by default) | OSV bulk, NVD CVSS |
-| Replacement source | e18e `module-replacements` (preferred / native / micro-utilities manifests) | replacements.fyi (bytes-saved, perf evidence) |
-| Popularity | npm bulk downloads + GitHub stars (log-norm) | Per-ecosystem references, dependents counts |
-| Dependents fan-out | Tiered: pyoso (`sboms_v0`, primary, GitHub repos) → ecosyste.ms (fallback, npm names) → SQLite weekly cache | Recursive fan-out, depth-2+ |
-| Project context | GitHub GraphQL (`isArchived`, last-merged-PR) + raw `package.json` / `pnpm-lock.yaml` for direct-dep verification | Reachability analysis, existing-PR dedupe |
-| Filtering | Outdated GHSA (`latest` no longer affected), transitive-only fan-out hits, `*NOT_JS*` repo roots, archived repos, weekly-downloads floor | "No commit in 24m", "replacement target itself flagged on OSV", maintainer WONTFIX learning |
-| Scoring axes | Vulnerability + bloat + perf — confidence axis (last-merged-PR decay) included | Measured bytes-saved per replacement, benchmark deltas |
-| Effort signal | Heuristic (version-bump = drop-in; e18e effort bands) | Codemod registry, breaking-change taxonomy |
-| Output | One brief per project, top-N with `top_n // 3` reserved for replacement-led briefs | Persisted opportunity history, state transitions |
-| Storage | In-memory pipeline + Markdown briefs (with YAML frontmatter) + SQLite dependents cache | Parquet raw landing → DuckDB warehouse, SQLMesh staging → marts |
-| Renderer | Astro 5 + Tailwind v4 static site (`site/`), Cloudflare Pages deploy | — |
-| Schedule | Local `biibaa run`; CI deploys the site on push | Daily-cron pipeline |
+- **Vulnerability source** — GHSA REST, unpatched advisories only
+- **Replacement source** — e18e `module-replacements` (preferred, native, and micro-utility manifests)
+- **Popularity** — npm bulk downloads + GitHub stars (log-normalised)
+- **Dependents fan-out** — tiered: pyoso `sboms_v0` → ecosyste.ms fallback → SQLite weekly cache
+- **Project context** — GitHub GraphQL (`isArchived`, last-merged-PR) + `package.json` / `pnpm-lock.yaml` for direct-dep verification
+- **Filtering** — drops already-patched CVEs, transitive-only hits, non-JS roots, archived repos, and projects below the weekly-downloads floor
+- **Scoring** — vulnerability + bloat + perf axes with a confidence modifier (last-merged-PR decay)
+- **Effort signal** — heuristic bands (version-bump = drop-in; e18e effort tiers)
+- **Output** — one brief per project, top-N ranked, with `top_n // 3` slots reserved for replacement-led briefs
+- **Storage** — in-memory pipeline, Markdown briefs with YAML frontmatter, SQLite dependents cache
+- **Renderer** — Astro 5 + Tailwind v4 static site deployed to Cloudflare Pages
+- **Schedule** — `biibaa run` locally; CI deploys the site on push to `main`
 
 ## Quickstart
 
