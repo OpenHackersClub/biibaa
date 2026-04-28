@@ -17,8 +17,13 @@ venv/
 dist/
 build/
 
-# Runtime data — briefs, raw, warehouse (per SPEC §8)
-data/
+# Runtime data — raw payloads, warehouse, fan-out cache (per SPEC §8).
+# data/briefs/ IS committed: site/src/content.config.ts reads them at Astro
+# build time on the Cloudflare Pages runner, which has no access to your
+# local data/.
+data/raw/
+data/warehouse.duckdb
+data/dependents_cache.sqlite
 
 # Editor
 .vscode/
