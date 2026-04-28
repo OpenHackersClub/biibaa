@@ -50,7 +50,7 @@ def test_fetch_direct_deps_returns_empty_set_when_manifest_has_no_deps(
     assert got == set()
 
 
-def test_fetch_direct_deps_returns_monorepo_sentinel_for_array_workspaces(
+def test_fetch_direct_deps_returns_monorepo_sentinel_for_array_workspaces_without_lockfile(
     httpx_mock: HTTPXMock,
 ) -> None:
     httpx_mock.add_response(
@@ -63,12 +63,17 @@ def test_fetch_direct_deps_returns_monorepo_sentinel_for_array_workspaces(
             "dependencies": {"lodash": "^4.0.0"},
         },
     )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/pnpm-lock.yaml",
+        method="GET",
+        status_code=404,
+    )
     src = GithubRepoSource(token="x", client=httpx.Client())
     got = src.fetch_direct_deps(repo_url="https://github.com/mono/repo")
     assert got == {MONOREPO_SENTINEL}
 
 
-def test_fetch_direct_deps_returns_monorepo_sentinel_for_object_workspaces(
+def test_fetch_direct_deps_returns_monorepo_sentinel_for_object_workspaces_without_lockfile(
     httpx_mock: HTTPXMock,
 ) -> None:
     httpx_mock.add_response(
@@ -81,6 +86,93 @@ def test_fetch_direct_deps_returns_monorepo_sentinel_for_object_workspaces(
                 "nohoist": ["**/foo"],
             },
         },
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/pnpm-lock.yaml",
+        method="GET",
+        status_code=404,
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    got = src.fetch_direct_deps(repo_url="https://github.com/mono/repo")
+    assert got == {MONOREPO_SENTINEL}
+
+
+def test_fetch_direct_deps_uses_pnpm_lockfile_for_monorepo(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Monorepo + pnpm-lock.yaml present → returns union of importer direct
+    deps so transitive-only matches (e.g. stream-buffers under expo) are
+    filtered out instead of letting the sentinel bypass the check."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/package.json",
+        method="GET",
+        json={
+            "name": "mono",
+            "private": True,
+            "workspaces": {"packages": ["packages/*"]},
+        },
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/pnpm-lock.yaml",
+        method="GET",
+        text=(
+            "lockfileVersion: '6.0'\n"
+            "importers:\n"
+            "  .:\n"
+            "    devDependencies:\n"
+            "      eslint:\n"
+            "        specifier: ^8\n"
+            "        version: 8.57.0\n"
+            "  packages/oauth-client-expo:\n"
+            "    peerDependencies:\n"
+            "      expo:\n"
+            "        specifier: '*'\n"
+            "        version: 50.0.0\n"
+            "    dependencies:\n"
+            "      jose:\n"
+            "        specifier: ^5\n"
+            "        version: 5.2.0\n"
+            "packages:\n"
+            "  /stream-buffers@3.0.2:\n"
+            "    resolution: {integrity: sha512-fake}\n"
+        ),
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    got = src.fetch_direct_deps(repo_url="https://github.com/mono/repo")
+    assert got == {"eslint", "expo", "jose"}
+    assert got is not None and "stream-buffers" not in got
+
+
+def test_fetch_pnpm_lockfile_falls_back_when_yaml_invalid(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/package.json",
+        method="GET",
+        json={"name": "mono", "workspaces": ["packages/*"]},
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/pnpm-lock.yaml",
+        method="GET",
+        text="not: valid: yaml: : :",
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    got = src.fetch_direct_deps(repo_url="https://github.com/mono/repo")
+    assert got == {MONOREPO_SENTINEL}
+
+
+def test_fetch_pnpm_lockfile_falls_back_when_no_importers(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/package.json",
+        method="GET",
+        json={"name": "mono", "workspaces": ["packages/*"]},
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/mono/repo/HEAD/pnpm-lock.yaml",
+        method="GET",
+        text="lockfileVersion: '6.0'\n",
     )
     src = GithubRepoSource(token="x", client=httpx.Client())
     got = src.fetch_direct_deps(repo_url="https://github.com/mono/repo")
@@ -251,7 +343,9 @@ def test_filter_keeps_candidate_when_verification_returns_none(
     assert [d.name for _, d in out] == ["private-pkg"]
 
 
-def test_filter_keeps_candidate_for_monorepo_root(httpx_mock: HTTPXMock) -> None:
+def test_filter_keeps_candidate_for_monorepo_root_without_lockfile(
+    httpx_mock: HTTPXMock,
+) -> None:
     httpx_mock.add_response(
         url="https://raw.githubusercontent.com/big/mono/HEAD/package.json",
         method="GET",
@@ -261,6 +355,11 @@ def test_filter_keeps_candidate_for_monorepo_root(httpx_mock: HTTPXMock) -> None
             "workspaces": ["packages/*"],
             "devDependencies": {"jest": "^29"},
         },
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/big/mono/HEAD/pnpm-lock.yaml",
+        method="GET",
+        status_code=404,
     )
     eco = _StubEcoSrc(
         [_dep("mono", "https://github.com/big/mono")]
@@ -276,6 +375,55 @@ def test_filter_keeps_candidate_for_monorepo_root(httpx_mock: HTTPXMock) -> None
         repo_src=repo_src,
     )
     assert [d.name for _, d in out] == ["mono"]
+
+
+def test_filter_drops_transitive_only_dep_in_monorepo_with_pnpm_lock(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The atproto/stream-buffers regression: a pnpm monorepo where the
+    flagged package only appears via a 4-deep transitive chain. Lockfile
+    parsing surfaces the real direct deps so the candidate is dropped."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/bsky/atproto/HEAD/package.json",
+        method="GET",
+        json={
+            "name": "atp",
+            "private": True,
+            "workspaces": {"packages": ["packages/*"]},
+        },
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/bsky/atproto/HEAD/pnpm-lock.yaml",
+        method="GET",
+        text=(
+            "lockfileVersion: '6.0'\n"
+            "importers:\n"
+            "  .:\n"
+            "    devDependencies:\n"
+            "      eslint:\n"
+            "        specifier: ^8\n"
+            "        version: 8.57.0\n"
+            "  packages/oauth-client-expo:\n"
+            "    peerDependencies:\n"
+            "      expo:\n"
+            "        specifier: '*'\n"
+            "        version: 50.0.0\n"
+        ),
+    )
+    eco = _StubEcoSrc(
+        [_dep("atproto", "https://github.com/bsky/atproto")]
+    )
+    downloads = _StubDownloadsSrc({"stream-buffers": 12_000_000})
+    repo_src = _make_repo_src(httpx.Client())
+    out = _fan_out_dependents(
+        replacements=[_replacement("stream-buffers")],
+        eco_src=eco,  # type: ignore[arg-type]
+        downloads_src=downloads,  # type: ignore[arg-type]
+        fanout_top_n=10,
+        dependents_per_replacement=5,
+        repo_src=repo_src,
+    )
+    assert out == []
 
 
 def test_filter_disabled_when_repo_src_is_none() -> None:
