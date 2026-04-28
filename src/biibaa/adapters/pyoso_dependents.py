@@ -14,6 +14,7 @@ because pyoso's `to_pandas` takes raw SQL with no parameterization.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import structlog
 
@@ -64,9 +65,12 @@ class PyosoSource:
         client: Client | None = None,
         min_stars: int = 10,
         breaker: CircuitBreaker[list[Dependent]] | None = None,
+        query_timeout_seconds: float = 30.0,
     ) -> None:
         self._client = client or Client(api_key=api_key)
         self._min_stars = min_stars
+        self._timeout = query_timeout_seconds
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pyoso")
         self._breaker = breaker or CircuitBreaker[list[Dependent]](
             name="pyoso",
             failure_threshold=3,
@@ -86,8 +90,12 @@ class PyosoSource:
         sql = _QUERY_TEMPLATE.format(
             package=package, min_stars=self._min_stars, top_k=top_k
         )
+        future = self._executor.submit(self._client.to_pandas, sql)
         try:
-            df = self._client.to_pandas(sql)
+            df = future.result(timeout=self._timeout)
+        except FuturesTimeoutError:
+            log.warning("pyoso.query_timeout", package=package, timeout=self._timeout)
+            return []
         except Exception as e:
             log.warning("pyoso.query_error", package=package, error=str(e))
             return []
@@ -109,8 +117,7 @@ class PyosoSource:
         return out
 
     def close(self) -> None:
-        # pyoso Client has no explicit close.
-        pass
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def build_query(*, package: str, min_stars: int, top_k: int) -> str:

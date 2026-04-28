@@ -5,8 +5,11 @@ from pathlib import Path
 
 import structlog
 import typer
+from dotenv import load_dotenv
 
 from biibaa.pipeline.run import run as run_pipeline
+
+load_dotenv()
 
 app = typer.Typer(help="biibaa — open source improvement opportunity tracker")
 
@@ -34,6 +37,15 @@ def run(
     advisory_limit: int = typer.Option(
         400, "--advisory-limit", help="Max advisories to ingest"
     ),
+    fanout_top_n: int = typer.Option(
+        40, "--fanout-top-n", help="Number of e18e replacements to fan out from"
+    ),
+    dependents_per_replacement: int = typer.Option(
+        5, "--dependents-per-replacement", help="Top-K dependents per replacement"
+    ),
+    min_weekly_downloads: int = typer.Option(
+        50_000, "--min-weekly-downloads", help="Drop projects below this floor"
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Ingest advisories, score, and render top-N improvement briefs."""
@@ -43,6 +55,9 @@ def run(
         top_n=top_n,
         ecosystem=ecosystem,
         advisory_limit=advisory_limit,
+        fanout_top_n=fanout_top_n,
+        dependents_per_replacement=dependents_per_replacement,
+        min_weekly_downloads=min_weekly_downloads,
     )
     typer.echo(f"Generated {len(paths)} briefs:")
     for p in paths:
