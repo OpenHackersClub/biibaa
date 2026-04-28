@@ -2,7 +2,7 @@
 
 ![biibaa](site/biibaa.png)
 
-> Beavers are keystone engineers, transforming simple waterways into thriving wetland ecosystems that sustain biodiversity and climate resilience.
+> ビーバーbiibaa (Beavers) are keystone engineers, transforming simple waterways into thriving wetland ecosystems that sustain biodiversity and climate resilience.
 
 Open source improvement opportunity tracker. Pulls advisory + popularity data
 and emits ranked Markdown briefs of low-effort, high-impact contribution
