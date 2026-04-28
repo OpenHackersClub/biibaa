@@ -1,0 +1,284 @@
+---
+import { getCollection } from "astro:content";
+import Base from "../layouts/Base.astro";
+
+const all = await getCollection("briefs");
+
+// Latest brief per slug — multiple dates exist for the same project; the
+// triage table only shows the freshest.
+const latestBySlug = new Map<string, (typeof all)[number]>();
+for (const b of all) {
+  const existing = latestBySlug.get(b.data.slug);
+  if (!existing || b.data.date > existing.data.date) {
+    latestBySlug.set(b.data.slug, b);
+  }
+}
+const briefs = Array.from(latestBySlug.values()).sort(
+  (a, b) => b.data.score.total - a.data.score.total,
+);
+
+// Slim row payload — everything the table renders/sorts/filters on.
+const rows = briefs.map((b) => ({
+  slug: b.data.slug,
+  href: `/briefs/${b.id.replace(/\.md$/, "")}/`,
+  ecosystem: b.data.project.ecosystem,
+  score: Math.round(b.data.score.total * 10) / 10,
+  impact: Math.round(b.data.score.impact * 10) / 10,
+  effort: Math.round(b.data.score.effort * 10) / 10,
+  confidence: Math.round(b.data.score.confidence),
+  opps: b.data.opportunities.count,
+  top_kind: b.data.opportunities.top_kind ?? "",
+  last_pr_merged: b.data.maintainer_activity?.last_pr_merged_at?.split("T")[0] ?? "",
+  bench: b.data.benchmarks?.has === true ? "yes" : b.data.benchmarks?.has === false ? "no" : "?",
+  archived: b.data.project.archived ? "yes" : "no",
+  tags: b.data.tags,
+  date: b.data.date,
+  repo_url: b.data.project.repo_url ?? "",
+}));
+
+const ecosystems = [...new Set(rows.map((r) => r.ecosystem).filter(Boolean))].sort();
+const kinds = [...new Set(rows.map((r) => r.top_kind).filter(Boolean))].sort();
+const tags = [...new Set(rows.flatMap((r) => r.tags))].sort();
+
+// Column definitions used on both the server (initial render) and client
+// (Alpine state). Kept in this single source so the JS sort understands the
+// same set of column names the table emits.
+const columns = [
+  { name: "slug", label: "Project", align: "left", sortable: true, mono: true },
+  { name: "ecosystem", label: "Eco", align: "center", sortable: true },
+  { name: "score", label: "Score", align: "right", sortable: true, scoreChip: true },
+  { name: "impact", label: "Impact", align: "right", sortable: true },
+  { name: "effort", label: "Effort", align: "right", sortable: true },
+  { name: "confidence", label: "Conf", align: "right", sortable: true },
+  { name: "opps", label: "Opps", align: "right", sortable: true },
+  { name: "top_kind", label: "Top kind", align: "left", sortable: true },
+  { name: "last_pr_merged", label: "LastPRMerged", align: "left", sortable: true, mono: true },
+  { name: "bench", label: "Bench", align: "center", sortable: true },
+  { name: "archived", label: "Arch", align: "center", sortable: true },
+  { name: "tags", label: "Tags", align: "left", sortable: false, isTags: true },
+  { name: "date", label: "Date", align: "center", sortable: true, mono: true },
+];
+const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
+---
+
+<Base title="biibaa — triage">
+  <span slot="header-right">{rows.length} briefs · {all.length} total dated</span>
+
+  <div
+    x-data={`triage(${JSON.stringify({ rows, ecosystems, kinds, tags, columns, labels })})`}
+    x-cloak
+  >
+    <!-- Filters -->
+    <div class="filter-card flex flex-wrap items-end gap-3 mb-3">
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        Ecosystem
+        <select x-model="filters.ecosystem" class="filter-select">
+          <option value="">any</option>
+          <template x-for="e in ecosystems" :key="e"><option :value="e" x-text="e"></option></template>
+        </select>
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        Top kind
+        <select x-model="filters.kind" class="filter-select">
+          <option value="">any</option>
+          <template x-for="k in kinds" :key="k"><option :value="k" x-text="k"></option></template>
+        </select>
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        Tag
+        <select x-model="filters.tag" class="filter-select">
+          <option value="">any</option>
+          <template x-for="t in tags" :key="t"><option :value="t" x-text="t"></option></template>
+        </select>
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        Bench
+        <select x-model="filters.bench" class="filter-select">
+          <option value="any">any</option>
+          <option value="yes">yes</option>
+          <option value="no">no</option>
+        </select>
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        Min score
+        <input type="number" min="0" max="100" step="5" x-model.number="filters.minScore" class="filter-input w-24" />
+      </label>
+      <label class="flex items-center gap-2 text-sm self-end pb-1">
+        <input type="checkbox" x-model="filters.hideArchived" />
+        Hide archived
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-[var(--color-muted)] flex-1 min-w-[200px]">
+        Search slug
+        <input type="text" x-model.debounce.150ms="filters.search" class="filter-input" placeholder="lodash, react, …" />
+      </label>
+    </div>
+
+    <!-- Sort bar -->
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <span class="text-xs text-[var(--color-muted)]">Sort by</span>
+      <template x-for="(key, i) in sortKeys" :key="key.col">
+        <span class="sort-chip" @click="flipSort(i)">
+          <span x-text="labels[key.col] + ' ' + (key.desc ? '↓' : '↑')"></span>
+          <span class="x" @click.stop="removeSort(i)">×</span>
+        </span>
+      </template>
+      <span x-show="sortKeys.length === 0" class="text-xs italic text-[var(--color-muted)]">none</span>
+      <span class="ml-auto text-xs text-[var(--color-muted)]" x-text="visibleRows.length + ' / ' + rows.length"></span>
+      <button
+        x-show="sortKeys.length > 0"
+        @click="resetSort()"
+        class="text-xs text-[var(--color-muted)] hover:text-[var(--color-text)] px-2 py-1"
+      >reset</button>
+    </div>
+
+    <!-- Table -->
+    <div class="triage-table">
+      <table>
+        <thead>
+          <tr>
+            {columns.map((c) => (
+              <th
+                data-col={c.name}
+                data-sortable={c.sortable ? "1" : "0"}
+                style={`text-align: ${c.align};`}
+              >
+                <span>{c.label}</span>
+                <span
+                  class="text-[var(--color-accent)] ml-1"
+                  x-show={`sortIndex('${c.name}') >= 0`}
+                  x-text={`sortArrow('${c.name}')`}
+                />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="row in visibleRows" :key="row.slug">
+            <tr @click="window.location = row.href">
+              {columns.map((c) => {
+                if (c.isTags) {
+                  return (
+                    <td class={c.align}>
+                      <template x-for="tag in row.tags" :key="tag">
+                        <span class="tag-chip" x-text="tag" />
+                      </template>
+                    </td>
+                  );
+                }
+                if (c.scoreChip) {
+                  return (
+                    <td class="right">
+                      <span
+                        :class={`'score-chip ' + (row.${c.name} >= 70 ? 'high' : row.${c.name} >= 50 ? 'mid' : 'low')`}
+                        x-text={`row.${c.name}`}
+                      />
+                    </td>
+                  );
+                }
+                const cls = `${c.align}${c.mono ? " mono" : ""}`;
+                return <td class={cls} x-text={`row.${c.name}`} />;
+              })}
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script is:inline src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script is:inline>
+    document.addEventListener("alpine:init", () => {
+      Alpine.data("triage", (initial) => ({
+        rows: initial.rows,
+        ecosystems: initial.ecosystems,
+        kinds: initial.kinds,
+        tags: initial.tags,
+        labels: initial.labels,
+        sortKeys: [{ col: "score", desc: true }],
+        filters: {
+          ecosystem: "",
+          kind: "",
+          tag: "",
+          bench: "any",
+          minScore: 0,
+          hideArchived: true,
+          search: "",
+        },
+
+        init() {
+          // Wire column-header click → push/flip on the sort stack.
+          // Done in init so click handlers see the live Alpine `this`.
+          this.$nextTick(() => {
+            this.$root.querySelectorAll("th[data-sortable='1']").forEach((th) => {
+              th.addEventListener("click", () => this.toggleSort(th.dataset.col));
+            });
+          });
+        },
+
+        get visibleRows() {
+          const f = this.filters;
+          let rows = this.rows.filter((r) => {
+            if (f.ecosystem && r.ecosystem !== f.ecosystem) return false;
+            if (f.kind && r.top_kind !== f.kind) return false;
+            if (f.tag && !r.tags.includes(f.tag)) return false;
+            if (f.bench === "yes" && r.bench !== "yes") return false;
+            if (f.bench === "no" && r.bench !== "no") return false;
+            if (f.hideArchived && r.archived === "yes") return false;
+            if (r.score < (f.minScore || 0)) return false;
+            if (
+              f.search &&
+              !r.slug.toLowerCase().includes(f.search.toLowerCase())
+            )
+              return false;
+            return true;
+          });
+          // Stable iterative sort, lowest-priority key first.
+          for (let i = this.sortKeys.length - 1; i >= 0; i--) {
+            const { col, desc } = this.sortKeys[i];
+            rows = rows.slice().sort((a, b) => {
+              const av = a[col] ?? "";
+              const bv = b[col] ?? "";
+              if (av < bv) return desc ? 1 : -1;
+              if (av > bv) return desc ? -1 : 1;
+              return 0;
+            });
+          }
+          return rows;
+        },
+
+        sortIndex(col) {
+          return this.sortKeys.findIndex((k) => k.col === col);
+        },
+        sortArrow(col) {
+          const i = this.sortIndex(col);
+          if (i < 0) return "";
+          return this.sortKeys[i].desc ? "↓" : "↑";
+        },
+        toggleSort(col) {
+          const i = this.sortIndex(col);
+          if (i >= 0) {
+            this.sortKeys[i].desc = !this.sortKeys[i].desc;
+          } else {
+            this.sortKeys.push({ col, desc: true });
+          }
+        },
+        flipSort(i) {
+          if (i >= 0 && i < this.sortKeys.length) {
+            this.sortKeys[i].desc = !this.sortKeys[i].desc;
+          }
+        },
+        removeSort(i) {
+          this.sortKeys.splice(i, 1);
+        },
+        resetSort() {
+          this.sortKeys = [{ col: "score", desc: true }];
+        },
+      }));
+    });
+  </script>
+  <style>
+    [x-cloak] {
+      display: none !important;
+    }
+  </style>
+</Base>

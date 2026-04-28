@@ -1,0 +1,39 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const { title = "biibaa", description = "Open source improvement opportunity tracker" } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
+  </head>
+  <body>
+    <main class="max-w-[1600px] mx-auto px-5 py-4">
+      <header class="flex items-baseline gap-3 mb-4">
+        <a href="/" class="text-3xl font-semibold tracking-tight text-white no-underline">biibaa</a>
+        <span class="text-sm text-[var(--color-muted)]">triage</span>
+        <span class="ml-auto text-xs text-[var(--color-muted)]">
+          <slot name="header-right" />
+        </span>
+      </header>
+      <slot />
+    </main>
+  </body>
+</html>

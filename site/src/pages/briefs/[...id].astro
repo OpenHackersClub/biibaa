@@ -1,0 +1,106 @@
+---
+import { getCollection, render } from "astro:content";
+import Base from "../../layouts/Base.astro";
+
+export async function getStaticPaths() {
+  const briefs = await getCollection("briefs");
+  return briefs.map((brief) => ({
+    params: { id: brief.id.replace(/\.md$/, "") },
+    props: { brief },
+  }));
+}
+
+const { brief } = Astro.props;
+const { Content } = await render(brief);
+const fm = brief.data;
+const score = fm.score;
+const repo = fm.project.repo_url;
+---
+
+<Base title={`${fm.title} — biibaa`} description={`Improvement brief for ${fm.title}`}>
+  <span slot="header-right">
+    <a href="/" class="text-[var(--color-muted)] hover:text-[var(--color-text)]">← all briefs</a>
+  </span>
+
+  <div class="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-5">
+    <article class="prose-brief bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-7 shadow-[0_12px_32px_-16px_rgb(0_0_0/0.5)]">
+      <Content />
+    </article>
+
+    <aside class="flex flex-col gap-3">
+      <div class="filter-card">
+        <div class="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">Score</div>
+        <div class="flex items-baseline gap-3">
+          <span
+            class:list={[
+              "score-chip text-base px-3 py-1",
+              score.total >= 70 ? "high" : score.total >= 50 ? "mid" : "low",
+            ]}
+          >
+            {score.total.toFixed(1)}
+          </span>
+          <span class="text-xs text-[var(--color-muted)]">total</span>
+        </div>
+        <dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-sm mt-3">
+          <dt class="text-[var(--color-muted)]">Impact</dt><dd class="text-right mono">{score.impact.toFixed(1)}</dd>
+          <dt class="text-[var(--color-muted)]">Effort</dt><dd class="text-right mono">{score.effort.toFixed(1)}</dd>
+          <dt class="text-[var(--color-muted)]">Confidence</dt><dd class="text-right mono">{score.confidence}</dd>
+        </dl>
+      </div>
+
+      <div class="filter-card">
+        <div class="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">Project</div>
+        <div class="text-sm space-y-1">
+          <div><span class="text-[var(--color-muted)]">Eco</span> · <span class="mono">{fm.project.ecosystem}</span></div>
+          {repo && (
+            <div>
+              <a href={repo} target="_blank" rel="noopener" class="text-[var(--color-accent)] mono text-xs">
+                {repo.replace(/^https?:\/\//, "")}
+              </a>
+            </div>
+          )}
+          {fm.project.downloads_weekly !== null && (
+            <div>
+              <span class="text-[var(--color-muted)]">Weekly DL</span> ·
+              <span class="mono"> {fm.project.downloads_weekly.toLocaleString()}</span>
+            </div>
+          )}
+          {fm.project.archived && (
+            <div class="text-amber-400">archived</div>
+          )}
+        </div>
+      </div>
+
+      {fm.maintainer_activity && (
+        <div class="filter-card">
+          <div class="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">Maintainer activity</div>
+          <div class="text-sm">{fm.maintainer_activity.label}</div>
+          {fm.maintainer_activity.last_pr_merged_at && (
+            <div class="text-xs text-[var(--color-muted)] mono mt-1">
+              {fm.maintainer_activity.last_pr_merged_at.split("T")[0]}
+            </div>
+          )}
+        </div>
+      )}
+
+      {fm.benchmarks && (
+        <div class="filter-card">
+          <div class="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">Benchmarks</div>
+          <div class="text-sm">{fm.benchmarks.has ? "yes" : "no"}</div>
+          {fm.benchmarks.signal && (
+            <div class="text-xs text-[var(--color-muted)] mono mt-1">{fm.benchmarks.signal}</div>
+          )}
+        </div>
+      )}
+
+      {fm.tags.length > 0 && (
+        <div class="filter-card">
+          <div class="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">Tags</div>
+          <div class="flex flex-wrap gap-1">
+            {fm.tags.map((t) => <span class="tag-chip">{t}</span>)}
+          </div>
+        </div>
+      )}
+    </aside>
+  </div>
+</Base>
