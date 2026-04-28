@@ -40,6 +40,9 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Typer idiomatically uses typer.Option(...) as default-arg sentinel.
 "src/biibaa/cli/*.py" = ["B008"]
+# NiceGUI builds UI via nested `with` blocks that have logic between layers,
+# and ships its theming via a long inline CSS string.
+"src/biibaa/web/*.py" = ["E501", "SIM117"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
