@@ -335,7 +335,7 @@ def test_filter_drops_candidate_without_direct_dep(
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.snakecase")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -357,7 +357,7 @@ def test_filter_keeps_candidate_with_direct_dep(httpx_mock: HTTPXMock) -> None:
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.snakecase")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -382,7 +382,7 @@ def test_filter_keeps_candidate_on_transient_verification_error(
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.snakecase")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -413,7 +413,7 @@ def test_filter_drops_candidate_with_no_js_at_root(httpx_mock: HTTPXMock) -> Non
     )
     downloads = _StubDownloadsSrc({"lodash.once": 30_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.once")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -447,7 +447,7 @@ def test_filter_keeps_candidate_for_monorepo_root_without_lockfile(
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.snakecase")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -496,7 +496,7 @@ def test_filter_drops_transitive_only_dep_in_monorepo_with_pnpm_lock(
     )
     downloads = _StubDownloadsSrc({"stream-buffers": 12_000_000})
     repo_src = _make_repo_src(httpx.Client())
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("stream-buffers")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]
@@ -513,7 +513,7 @@ def test_filter_disabled_when_repo_src_is_none() -> None:
         [_dep("transitive-only", "https://github.com/foo/bar")]
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
-    out = _fan_out_dependents(
+    out, _ = _fan_out_dependents(
         replacements=[_replacement("lodash.snakecase")],
         eco_src=eco,  # type: ignore[arg-type]
         downloads_src=downloads,  # type: ignore[arg-type]

@@ -63,7 +63,12 @@ def _build_tags(brief: Brief) -> list[str]:
 
 
 def _build_citations(opportunities: list[Opportunity]) -> list[dict[str, str]]:
-    """Flat citations list — what a website needs to render evidence links."""
+    """Flat citations list — what a website needs to render evidence links.
+
+    e18e citations deep-link to the from-package's specific entry in the
+    manifest (`citation_url` carries `#L<line>` when known) so reviewers
+    land on the actual mapping rather than scrolling a 5k-line JSON file.
+    """
     out: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for opp in opportunities:
@@ -75,17 +80,31 @@ def _build_citations(opportunities: list[Opportunity]) -> list[dict[str, str]]:
                 out.append({"type": "advisory", "id": opp.advisory.id, "url": url})
         if opp.replacement:
             manifest = opp.replacement.evidence.get("manifest")
-            if isinstance(manifest, str):
-                url = (
-                    "https://github.com/e18e/module-replacements/blob/main/manifests/"
-                    f"{manifest}"
+            if not isinstance(manifest, str):
+                continue
+            citation_url = opp.replacement.evidence.get("citation_url")
+            url = (
+                citation_url
+                if isinstance(citation_url, str)
+                else f"https://github.com/e18e/module-replacements/blob/main/manifests/{manifest}"
+            )
+            from_name = opp.replacement.from_purl.removeprefix("pkg:npm/")
+            citation_id = f"{manifest}#{from_name}"
+            key = ("e18e-replacement", citation_id)
+            if key not in seen:
+                seen.add(key)
+                out.append(
+                    {"type": "e18e-replacement", "id": citation_id, "url": url}
                 )
-                key = ("e18e-replacement", manifest)
-                if key not in seen:
-                    seen.add(key)
-                    out.append(
-                        {"type": "e18e-replacement", "id": manifest, "url": url}
-                    )
+        for loc in opp.dependency_locations:
+            anchor = f"#L{loc.line}" if loc.line is not None else ""
+            cid = f"{loc.file}{anchor}"
+            key = ("dependency-location", cid)
+            if key not in seen:
+                seen.add(key)
+                out.append(
+                    {"type": "dependency-location", "id": cid, "url": loc.url}
+                )
     return out
 
 
@@ -171,7 +190,14 @@ def render_brief(brief: Brief) -> str:
 
 
 def write_brief(brief: Brief, out_dir: Path) -> Path:
+    """Write the brief as `<out_dir>/<slug>.md`, overwriting any prior run.
+
+    Each project keeps a single file. The previous date-suffixed scheme
+    (`<slug>/<date>.md`) accumulated stale files for projects no longer
+    eligible — overwriting in place makes the on-disk set match the
+    latest run's eligible-projects set.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{brief.run_at.strftime('%Y-%m-%d')}.md"
+    path = out_dir / f"{brief.slug}.md"
     path.write_text(render_brief(brief))
     return path
