@@ -1,5 +1,6 @@
 # Workspace temp
 .tmp/
+.claude/worktrees/
 
 # Python
 __pycache__/
