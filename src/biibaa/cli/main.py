@@ -32,16 +32,16 @@ def run(
     output_dir: Path = typer.Option(
         Path("data/briefs"), "--out", help="Brief output directory"
     ),
-    top_n: int = typer.Option(20, "--top", help="Number of briefs to render"),
+    top_n: int = typer.Option(1000, "--top", help="Number of briefs to render"),
     ecosystem: str = typer.Option("npm", "--ecosystem"),
     advisory_limit: int = typer.Option(
-        400, "--advisory-limit", help="Max advisories to ingest"
+        2000, "--advisory-limit", help="Max advisories to ingest"
     ),
     fanout_top_n: int = typer.Option(
-        40, "--fanout-top-n", help="Number of e18e replacements to fan out from"
+        647, "--fanout-top-n", help="Number of e18e replacements to fan out from"
     ),
     dependents_per_replacement: int = typer.Option(
-        5, "--dependents-per-replacement", help="Top-K dependents per replacement"
+        30, "--dependents-per-replacement", help="Top-K dependents per replacement"
     ),
     min_weekly_downloads: int = typer.Option(
         50_000, "--min-weekly-downloads", help="Drop projects below this floor"

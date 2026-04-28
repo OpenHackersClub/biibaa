@@ -31,8 +31,8 @@ projects by contribution leverage, and writes ranked Markdown briefs.
 ## Quickstart
 
 ```sh
-uv sync
-uv run biibaa run --top 20
+uv sync --extra pyoso
+uv run biibaa run
 ```
 
 Briefs land in `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md` (e.g. `data/briefs/npm/reduxjs__react-redux/2026-04-27.md`). Each file is a Markdown body with structured YAML frontmatter (`schema: biibaa-brief/1`) consumable by the static site.
@@ -42,11 +42,11 @@ Briefs land in `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md` (e.g. `data/b
 | Flag | Default | Purpose |
 |---|---|---|
 | `--out` | `data/briefs` | Brief output dir |
-| `--top` | `20` | Number of briefs to render |
+| `--top` | `1000` | Number of briefs to render |
 | `--ecosystem` | `npm` | Only `npm` wired today |
-| `--advisory-limit` | `400` | Max GHSA advisories to ingest |
-| `--fanout-top-n` | `40` | Cap how many e18e mappings to fan out from |
-| `--dependents-per-replacement` | `5` | Top-K dependents pulled per replacement |
+| `--advisory-limit` | `2000` | Max GHSA advisories to ingest |
+| `--fanout-top-n` | `647` | Cap how many e18e mappings to fan out from |
+| `--dependents-per-replacement` | `30` | Top-K dependents pulled per replacement |
 | `--min-weekly-downloads` | `50000` | Drop projects below this floor |
 | `-v` / `--verbose` | off | Debug logs |
 

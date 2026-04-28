@@ -331,13 +331,13 @@ def _fan_out_dependents(
 def run(
     *,
     output_dir: Path,
-    top_n: int = 20,
+    top_n: int = 1000,
     ecosystem: str = "npm",
-    advisory_limit: int = 400,
+    advisory_limit: int = 2000,
     include_replacements: bool = True,
     max_opps_per_project: int = 6,
-    fanout_top_n: int = 40,
-    dependents_per_replacement: int = 5,
+    fanout_top_n: int = 647,
+    dependents_per_replacement: int = 30,
     min_weekly_downloads: int = 50_000,
 ) -> list[Path]:
     """Pull advisories + replacement-fan-outs, score, render top-N briefs."""
