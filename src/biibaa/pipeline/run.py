@@ -24,7 +24,11 @@ from biibaa.adapters._semver import is_version_in_range
 from biibaa.adapters.dependents_factory import build_dependents_source
 from biibaa.adapters.e18e import E18eReplacementsSource
 from biibaa.adapters.github_advisories import GithubAdvisorySource
-from biibaa.adapters.github_repo import MONOREPO_SENTINEL, GithubRepoSource
+from biibaa.adapters.github_repo import (
+    MONOREPO_SENTINEL,
+    NOT_JS_SENTINEL,
+    GithubRepoSource,
+)
 from biibaa.adapters.npm_downloads import NpmDownloadsSource
 from biibaa.adapters.npm_registry import NpmRegistrySource
 from biibaa.briefs.render import write_brief
@@ -272,7 +276,7 @@ def _fan_out_dependents(
         return candidates
 
     out: list[tuple[Replacement, Dependent]] = []
-    kept = dropped = unknown = monorepo = 0
+    kept = dropped = unknown = monorepo = not_js = 0
     for rep, dep in candidates:
         from_name = _project_name_from_purl(rep.from_purl)
         if not dep.repo_url:
@@ -286,6 +290,16 @@ def _fan_out_dependents(
             unknown += 1
             kept += 1
             out.append((rep, dep))
+            continue
+        if NOT_JS_SENTINEL in direct:
+            log.info(
+                "fanout.dropped_not_js_at_root",
+                from_pkg=from_name,
+                dependent=dep.name,
+                repo_url=dep.repo_url,
+            )
+            not_js += 1
+            dropped += 1
             continue
         if MONOREPO_SENTINEL in direct:
             monorepo += 1
@@ -309,6 +323,7 @@ def _fan_out_dependents(
         dropped=dropped,
         unknown=unknown,
         monorepo=monorepo,
+        not_js=not_js,
     )
     return out
 

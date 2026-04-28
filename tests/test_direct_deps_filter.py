@@ -12,7 +12,11 @@ from __future__ import annotations
 import httpx
 from pytest_httpx import HTTPXMock
 
-from biibaa.adapters.github_repo import MONOREPO_SENTINEL, GithubRepoSource
+from biibaa.adapters.github_repo import (
+    MONOREPO_SENTINEL,
+    NOT_JS_SENTINEL,
+    GithubRepoSource,
+)
 from biibaa.domain import Replacement
 from biibaa.pipeline.run import _fan_out_dependents
 from biibaa.ports.dependents import Dependent
@@ -179,15 +183,61 @@ def test_fetch_pnpm_lockfile_falls_back_when_no_importers(
     assert got == {MONOREPO_SENTINEL}
 
 
-def test_fetch_direct_deps_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+def test_fetch_direct_deps_returns_not_js_when_no_pkg_json_and_no_lockfiles(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Pure non-JS repo (e.g. Rust desktop app like zed-industries/zed):
+    package.json 404, every root lockfile 404 → mark as NOT_JS so callers
+    drop the candidate instead of leaking transitives from sub-trees."""
     httpx_mock.add_response(
-        url="https://raw.githubusercontent.com/ghost/missing/HEAD/package.json",
+        url="https://raw.githubusercontent.com/zed-industries/zed/HEAD/package.json",
         method="GET",
         status_code=404,
-        text="404: Not Found",
+    )
+    for lf in ("pnpm-lock.yaml", "yarn.lock", "package-lock.json"):
+        httpx_mock.add_response(
+            url=f"https://raw.githubusercontent.com/zed-industries/zed/HEAD/{lf}",
+            method="HEAD",
+            status_code=404,
+        )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    got = src.fetch_direct_deps(repo_url="https://github.com/zed-industries/zed")
+    assert got == {NOT_JS_SENTINEL}
+
+
+def test_fetch_direct_deps_returns_none_when_pkg_json_404_but_lockfile_present(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Some workflows commit a lockfile without the package.json at root
+    (rare, but seen in vendored bundles). Treat as transient/unknown — fail
+    open rather than dropping a possibly-real JS dependent."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/oddly/pkged/HEAD/package.json",
+        method="GET",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/oddly/pkged/HEAD/pnpm-lock.yaml",
+        method="HEAD",
+        status_code=200,
     )
     src = GithubRepoSource(token="x", client=httpx.Client())
-    assert src.fetch_direct_deps(repo_url="https://github.com/ghost/missing") is None
+    got = src.fetch_direct_deps(repo_url="https://github.com/oddly/pkged")
+    assert got is None
+
+
+def test_fetch_direct_deps_returns_none_on_transient_pkg_fetch_error(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """5xx / network blip on package.json is NOT a definitive 404 — never
+    probe lockfiles or mark as NOT_JS, just fail open."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/flaky/server/HEAD/package.json",
+        method="GET",
+        status_code=502,
+    )
+    src = GithubRepoSource(token="x", client=httpx.Client())
+    assert src.fetch_direct_deps(repo_url="https://github.com/flaky/server") is None
 
 
 def test_fetch_direct_deps_returns_none_on_invalid_json(httpx_mock: HTTPXMock) -> None:
@@ -318,17 +368,17 @@ def test_filter_keeps_candidate_with_direct_dep(httpx_mock: HTTPXMock) -> None:
     assert [d.name for _, d in out] == ["consumer"]
 
 
-def test_filter_keeps_candidate_when_verification_returns_none(
+def test_filter_keeps_candidate_on_transient_verification_error(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """404 / parse error → unknown, don't filter."""
+    """5xx / parse error on package.json → unknown, don't filter."""
     httpx_mock.add_response(
-        url="https://raw.githubusercontent.com/some/private/HEAD/package.json",
+        url="https://raw.githubusercontent.com/flaky/server/HEAD/package.json",
         method="GET",
-        status_code=404,
+        status_code=502,
     )
     eco = _StubEcoSrc(
-        [_dep("private-pkg", "https://github.com/some/private")]
+        [_dep("private-pkg", "https://github.com/flaky/server")]
     )
     downloads = _StubDownloadsSrc({"lodash.snakecase": 5_000_000})
     repo_src = _make_repo_src(httpx.Client())
@@ -341,6 +391,37 @@ def test_filter_keeps_candidate_when_verification_returns_none(
         repo_src=repo_src,
     )
     assert [d.name for _, d in out] == ["private-pkg"]
+
+
+def test_filter_drops_candidate_with_no_js_at_root(httpx_mock: HTTPXMock) -> None:
+    """The zed-industries/zed regression: a Rust repo with no package.json
+    and no JS lockfile at root surfaces in OSO sboms_v0 only via a sub-tree.
+    Every replacement candidate against such a repo is transitive — drop."""
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/zed-industries/zed/HEAD/package.json",
+        method="GET",
+        status_code=404,
+    )
+    for lf in ("pnpm-lock.yaml", "yarn.lock", "package-lock.json"):
+        httpx_mock.add_response(
+            url=f"https://raw.githubusercontent.com/zed-industries/zed/HEAD/{lf}",
+            method="HEAD",
+            status_code=404,
+        )
+    eco = _StubEcoSrc(
+        [_dep("zed", "https://github.com/zed-industries/zed")]
+    )
+    downloads = _StubDownloadsSrc({"lodash.once": 30_000_000})
+    repo_src = _make_repo_src(httpx.Client())
+    out = _fan_out_dependents(
+        replacements=[_replacement("lodash.once")],
+        eco_src=eco,  # type: ignore[arg-type]
+        downloads_src=downloads,  # type: ignore[arg-type]
+        fanout_top_n=10,
+        dependents_per_replacement=5,
+        repo_src=repo_src,
+    )
+    assert out == []
 
 
 def test_filter_keeps_candidate_for_monorepo_root_without_lockfile(
