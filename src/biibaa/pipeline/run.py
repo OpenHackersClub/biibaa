@@ -464,7 +464,9 @@ def run(
 
     paths: list[Path] = []
     for brief in top:
-        paths.append(write_brief(brief, output_dir / brief.slug))
+        paths.append(
+            write_brief(brief, output_dir / brief.project.ecosystem / brief.slug)
+        )
 
     advisory_src.close()
     downloads_src.close()

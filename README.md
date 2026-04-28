@@ -26,7 +26,7 @@ uv sync
 uv run biibaa run --top 20
 ```
 
-Briefs land in `data/briefs/<project>/<yyyy-mm-dd>.md`.
+Briefs land in `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md` (e.g. `data/briefs/npm/react__react/2026-04-27.md`).
 
 ## Configuration
 

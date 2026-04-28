@@ -105,7 +105,7 @@ sources → ingest (raw landing) → normalize (canonical model) → score → b
 2. **Normalize** — SQLMesh staging models read raw Parquet via DuckDB's `read_parquet`, decode into typed staging tables; intermediate models apply source precedence (§3.2) and dedupe. Time-partitioned raw inputs map to `INCREMENTAL_BY_TIME_RANGE` models keyed on the ingest date.
 3. **Fan-out** — for each flagged package, enumerate top-K dependents via npm browse (and ecosyste.ms when extending) to expand the candidate set.
 4. **Score** — apply heuristics (§6). Materialize `opportunities` table.
-5. **Brief** — pick top-N projects by aggregate score; render Markdown briefs to `data/briefs/<project>/<yyyy-mm-dd>.md`.
+5. **Brief** — pick top-N projects by aggregate score; render Markdown briefs to `data/briefs/<ecosystem>/<project>/<yyyy-mm-dd>.md`.
 
 Each step is idempotent and replayable from raw.
 
@@ -245,7 +245,7 @@ This is a deliberate departure from the TypeScript/Effect-TS preference in `arch
 | **Marts** | SQLMesh `FULL` or `INCREMENTAL` models | `projects`, `advisories`, `replacements`, `dependents`, `opportunities` |
 | **Score** | SQLMesh SQL + macros | Apply popularity + severity + effort heuristics; materialize `opportunities` |
 | **Audits** | SQLMesh audits | `not_null`, `unique_values`, `relationships`, custom (e.g. `score_in_range`) |
-| **Brief** | Python + Jinja2 | Read `opportunities` from DuckDB; render Markdown to `data/briefs/<project>/<date>.md` |
+| **Brief** | Python + Jinja2 | Read `opportunities` from DuckDB; render Markdown to `data/briefs/<ecosystem>/<project>/<date>.md` |
 | **CLI** | Python (Typer) | `biibaa ingest <source>`, `biibaa run`, `biibaa brief`, `biibaa show <project>` |
 
 ### 9.2 Hexagonal split (Python)
