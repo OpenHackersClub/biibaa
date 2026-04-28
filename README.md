@@ -1,5 +1,7 @@
 # biibaa
 
+![biibaa](site/biibaa.png)
+
 Open source improvement opportunity tracker. Pulls advisory + popularity data
 and emits ranked Markdown briefs of low-effort, high-impact contribution
 targets. See [SPEC.md](SPEC.md) for the full design.
