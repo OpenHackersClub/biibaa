@@ -41,6 +41,22 @@ GRAPHQL_URL = "https://api.github.com/graphql"
 # in a single HTTP fetch.
 MONOREPO_SENTINEL = "*MONOREPO*"
 
+# Sentinel returned when the repo has no JS manifest of any kind at root
+# (no package.json, no pnpm-lock.yaml / yarn.lock / package-lock.json).
+# OSO's sboms_v0 surfaces such repos when JS lives in a sub-tree, but a
+# transitive hit four levels deep under tooling isn't a contribution
+# opportunity for the root project — callers drop these candidates.
+NOT_JS_SENTINEL = "*NOT_JS*"
+
+# Lockfiles whose presence at root proves the repo treats JS as a top-level
+# concern. Used by fetch_direct_deps to distinguish "not a JS project at
+# root" (drop) from "transient fetch error" (fail open).
+_ROOT_LOCKFILES: tuple[str, ...] = (
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+)
+
 # Workspace dependency sections in `pnpm-lock.yaml` `importers.<path>` whose
 # keys are direct deps of that workspace's `package.json`.
 _PNPM_DEP_SECTIONS: tuple[str, ...] = (
@@ -128,10 +144,17 @@ class GithubRepoSource:
         # Caches the parsed package.json so fetch_direct_deps and bench_info
         # share a single HTTP round-trip per repo. None = fetch/parse failed.
         self._pkg_cache: dict[tuple[str, str], dict | None] = {}
+        # Tracks whether package.json was definitively absent (404) vs failed
+        # for some other reason (parse error, network blip). Lets the
+        # transitive-filter distinguish "not a JS project" from "transient".
+        self._pkg_missing: dict[tuple[str, str], bool] = {}
         # Caches the union of direct-dep names across all workspaces parsed
         # from `pnpm-lock.yaml`. None = fetch or parse failed (caller falls
         # back to MONOREPO_SENTINEL).
         self._lockfile_cache: dict[tuple[str, str], set[str] | None] = {}
+        # Caches whether ANY root lockfile exists. None = couldn't tell
+        # (transient error). True/False are definitive.
+        self._has_root_lockfile_cache: dict[tuple[str, str], bool | None] = {}
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json"}
@@ -193,7 +216,9 @@ class GithubRepoSource:
         """Fetch + parse the repo's HEAD package.json, cached per repo.
 
         Returns the parsed JSON object, or None on any failure (parse error,
-        404, network error, non-object payload).
+        404, network error, non-object payload). Sets `self._pkg_missing`
+        when the failure is a definitive 404 so callers can distinguish
+        "no package.json at root" from "transient fetch error".
         """
         parsed = _parse_repo_url(repo_url)
         if not parsed:
@@ -204,6 +229,10 @@ class GithubRepoSource:
         url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/package.json"
         try:
             r = self._client.get(url, headers=self._headers())
+            if r.status_code == 404:
+                self._pkg_cache[parsed] = None
+                self._pkg_missing[parsed] = True
+                return None
             r.raise_for_status()
             payload = json.loads(r.text)
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
@@ -213,12 +242,42 @@ class GithubRepoSource:
                 error=str(e),
             )
             self._pkg_cache[parsed] = None
+            self._pkg_missing[parsed] = False
             return None
         if not isinstance(payload, dict):
             self._pkg_cache[parsed] = None
+            self._pkg_missing[parsed] = False
             return None
         self._pkg_cache[parsed] = payload
+        self._pkg_missing[parsed] = False
         return payload
+
+    def _has_any_root_lockfile(self, *, owner: str, name: str) -> bool | None:
+        """Return True/False if at least one root JS lockfile exists/none, or
+        None if we can't tell (transient error).
+
+        Uses HEAD requests so we don't pay the body cost — we only care about
+        existence. Caches the result per repo.
+        """
+        key = (owner, name)
+        if key in self._has_root_lockfile_cache:
+            return self._has_root_lockfile_cache[key]
+        any_unknown = False
+        for lf in _ROOT_LOCKFILES:
+            url = f"https://raw.githubusercontent.com/{owner}/{name}/HEAD/{lf}"
+            try:
+                r = self._client.head(url, headers=self._headers())
+            except httpx.HTTPError:
+                any_unknown = True
+                continue
+            if r.status_code == 200:
+                self._has_root_lockfile_cache[key] = True
+                return True
+            if r.status_code != 404:
+                any_unknown = True
+        result: bool | None = None if any_unknown else False
+        self._has_root_lockfile_cache[key] = result
+        return result
 
     def _fetch_pnpm_lockfile_deps(self, *, repo_url: str) -> set[str] | None:
         """Parse `pnpm-lock.yaml` and return the union of direct-dep names
@@ -272,18 +331,35 @@ class GithubRepoSource:
         """Return the set of names listed in `dependencies`+`devDependencies`
         of the repo's HEAD `package.json`.
 
-        Returns `None` on any failure (parse error, 404, network error) so
-        callers can treat the result as "unknown — don't filter". For monorepo
-        roots (a non-empty `workspaces` field), tries `pnpm-lock.yaml` first
-        — its `importers` map gives every workspace's direct deps in one
-        HTTP fetch, which lets the fan-out filter drop transitive-only hits
-        from lockfile-derived SBOMs (e.g. an iOS-tooling dep four levels deep
+        Returns `None` on transient failure (parse error, network error) so
+        callers can treat the result as "unknown — don't filter". When the
+        package.json is definitively absent (404) AND no JS lockfile exists
+        at root, returns `{NOT_JS_SENTINEL}` — the repo isn't a JS project
+        at root, so a SBOM-derived dependent hit there is almost certainly
+        transitive and should be dropped. For monorepo roots (a non-empty
+        `workspaces` field), tries `pnpm-lock.yaml` first — its `importers`
+        map gives every workspace's direct deps in one HTTP fetch, which
+        lets the fan-out filter drop transitive-only hits from
+        lockfile-derived SBOMs (e.g. an iOS-tooling dep four levels deep
         under Expo). Falls back to `{MONOREPO_SENTINEL}` when the lockfile
         is absent or unparseable so callers still treat the repo as
         "verified, don't filter".
         """
+        parsed = _parse_repo_url(repo_url)
+        if not parsed:
+            return None
         payload = self._fetch_pkg_json(repo_url=repo_url)
         if payload is None:
+            # Distinguish "no package.json at root" (404) from transient
+            # errors. Only the 404 case is worth probing further.
+            if not self._pkg_missing.get(parsed, False):
+                return None
+            owner, name = parsed
+            has_lockfile = self._has_any_root_lockfile(owner=owner, name=name)
+            if has_lockfile is False:
+                return {NOT_JS_SENTINEL}
+            # has_lockfile True (a lockfile exists despite no package.json)
+            # or None (couldn't tell) — fail open.
             return None
 
         # Monorepo detection: `workspaces` may be an array or an object with
