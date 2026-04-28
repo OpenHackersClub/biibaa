@@ -61,7 +61,7 @@ const columns = [
 const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
 ---
 
-<Base title="biibaa — triage">
+<Base title="biibaa">
   <span slot="header-right">{rows.length} briefs · {all.length} total dated</span>
 
   <div
@@ -154,7 +154,7 @@ const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
         </thead>
         <tbody>
           <template x-for="row in visibleRows" :key="row.slug">
-            <tr @click="window.location = row.href">
+            <tr @click="onRowClick(row, $event)">
               {columns.map((c) => {
                 if (c.isTags) {
                   return (
@@ -183,6 +183,36 @@ const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
         </tbody>
       </table>
     </div>
+
+    <!-- Drawer -->
+    <div
+      x-show="drawer.open"
+      x-transition.opacity
+      class="drawer-backdrop"
+      @click="closeDrawer()"
+      style="display: none;"
+    ></div>
+    <aside
+      class="drawer-panel"
+      :class="drawer.open ? 'open' : ''"
+      role="dialog"
+      aria-modal="true"
+      @keydown.escape.window="closeDrawer()"
+    >
+      <div class="drawer-head">
+        <a
+          :href="drawer.href"
+          class="text-[var(--color-muted)] hover:text-[var(--color-text)] text-xs"
+          title="Open standalone page"
+        >open in page →</a>
+        <button @click="closeDrawer()" class="drawer-close" aria-label="Close">×</button>
+      </div>
+      <div class="drawer-body">
+        <div x-show="drawer.loading" class="text-[var(--color-muted)] text-sm p-6">Loading…</div>
+        <div x-show="drawer.error" class="text-amber-400 text-sm p-6" x-text="drawer.error"></div>
+        <div x-show="!drawer.loading && !drawer.error" x-html="drawer.html"></div>
+      </div>
+    </aside>
   </div>
 
   <script is:inline src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
@@ -204,6 +234,16 @@ const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
           hideArchived: true,
           search: "",
         },
+        drawer: {
+          open: false,
+          loading: false,
+          error: "",
+          href: "",
+          html: "",
+          cache: {},
+          prevTitle: "",
+          prevPath: "",
+        },
 
         init() {
           // Wire column-header click → push/flip on the sort stack.
@@ -213,6 +253,85 @@ const labels = Object.fromEntries(columns.map((c) => [c.name, c.label]));
               th.addEventListener("click", () => this.toggleSort(th.dataset.col));
             });
           });
+          // Browser back closes drawer instead of leaving the page.
+          window.addEventListener("popstate", () => {
+            if (this.drawer.open) this._teardownDrawer();
+          });
+        },
+
+        onRowClick(row, ev) {
+          // Let modifier / middle clicks fall through to a real navigation
+          // so users keep "open in new tab" behavior.
+          if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button === 1) {
+            window.open(row.href, "_blank");
+            return;
+          }
+          this.openDrawer(row.href);
+        },
+
+        async openDrawer(href) {
+          this.drawer.prevTitle = document.title;
+          this.drawer.prevPath = location.pathname + location.search + location.hash;
+          this.drawer.href = href;
+          this.drawer.open = true;
+          this.drawer.error = "";
+          document.body.classList.add("drawer-locked");
+          history.pushState({ drawer: true, href }, "", href);
+
+          if (this.drawer.cache[href]) {
+            this.drawer.html = this.drawer.cache[href].html;
+            this.drawer.loading = false;
+            if (this.drawer.cache[href].title) document.title = this.drawer.cache[href].title;
+            return;
+          }
+
+          this.drawer.html = "";
+          this.drawer.loading = true;
+          try {
+            const res = await fetch(href, { headers: { Accept: "text/html" } });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const text = await res.text();
+            const doc = new DOMParser().parseFromString(text, "text/html");
+            const main = doc.querySelector("main");
+            if (!main) throw new Error("Could not find content");
+            // Drop the page header — the drawer has its own chrome.
+            const fragment = document.createElement("div");
+            main.querySelectorAll(":scope > header").forEach((h) => h.remove());
+            fragment.append(...main.childNodes);
+            const title = doc.querySelector("title")?.textContent ?? "";
+            const html = fragment.innerHTML;
+            this.drawer.cache[href] = { html, title };
+            // Only apply if user hasn't navigated away in the meantime.
+            if (this.drawer.href === href && this.drawer.open) {
+              this.drawer.html = html;
+              if (title) document.title = title;
+            }
+          } catch (e) {
+            this.drawer.error = `Failed to load: ${e.message}. Falling back to page navigation.`;
+            window.location = href;
+          } finally {
+            this.drawer.loading = false;
+          }
+        },
+
+        closeDrawer() {
+          if (!this.drawer.open) return;
+          // If we pushed state to open it, going back unwinds cleanly and
+          // the popstate handler tears down. Otherwise tear down directly.
+          if (history.state && history.state.drawer) {
+            history.back();
+          } else {
+            this._teardownDrawer();
+          }
+        },
+
+        _teardownDrawer() {
+          this.drawer.open = false;
+          this.drawer.loading = false;
+          this.drawer.error = "";
+          this.drawer.html = "";
+          document.body.classList.remove("drawer-locked");
+          if (this.drawer.prevTitle) document.title = this.drawer.prevTitle;
         },
 
         get visibleRows() {
