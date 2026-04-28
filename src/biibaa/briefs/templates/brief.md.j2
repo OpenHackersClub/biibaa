@@ -1,5 +1,8 @@
 # {{ project.name }} — {{ run_at.strftime('%Y-%m-%d') }} Improvement Brief
 
+{% if project.repo_url %}**Repo**: [{{ project.repo_url | replace('https://', '') | replace('http://', '') }}]({{ project.repo_url }})
+
+{% endif %}
 ## Top opportunities
 
 {% for opp in opportunities %}

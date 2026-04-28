@@ -258,8 +258,9 @@ def test_frontmatter_opportunities_summary_reports_kinds_and_top() -> None:
     ]
 
 
-def test_body_keeps_title_and_opportunity_cards_but_drops_metadata_bullets() -> None:
-    """Body should be lean: title + per-opp cards. Metadata lives in frontmatter."""
+def test_body_keeps_title_repo_link_and_opportunity_cards_but_drops_metadata_bullets() -> None:
+    """Body should be lean: title + repo link + per-opp cards. Bulky metadata
+    (score, maintainer-activity, bench, citations) lives in frontmatter."""
     proj = _project(has_benchmarks=True, bench_signal="devDep:tinybench")
     rep = Replacement(
         id="r1", from_purl="pkg:npm/moment", to_purls=["pkg:npm/date-fns"],
@@ -272,13 +273,29 @@ def test_body_keeps_title_and_opportunity_cards_but_drops_metadata_bullets() -> 
     assert "# react-redux" in body
     assert "## Top opportunities" in body
     assert "moment" in body and "date-fns" in body
+    # Single repo link at the top — the most actionable navigation aid for
+    # readers viewing the brief in a site / preview pane.
+    assert "**Repo**: [github.com/" in body
+    assert proj.repo_url in body
     # Old-format header bullets must be gone — they live in frontmatter now.
-    assert "**Repo**" not in body
     assert "**Score**" not in body
     assert "**Maintainer activity**" not in body
     assert "**Benchmarks**" not in body
     # Citations footer was redundant with inline evidence — also gone.
     assert "## Citations" not in body
+
+
+def test_body_omits_repo_link_when_repo_url_unset() -> None:
+    """No repo URL → no broken link, just go straight from H1 to opportunities."""
+    proj = _project(repo_url=None)
+    rep = Replacement(
+        id="r1", from_purl="pkg:npm/x", to_purls=["pkg:npm/<native>"],
+        axis="bloat", effort="drop-in", evidence={"manifest": "native.json"},
+    )
+    brief = _brief([_repl_opp(proj, replacement=rep, kind="dep-replacement")], proj)
+
+    _, body = _split_frontmatter(render_brief(brief))
+    assert "**Repo**" not in body
 
 
 def test_write_brief_still_writes_dated_file(tmp_path: Path) -> None:
