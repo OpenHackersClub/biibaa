@@ -50,6 +50,21 @@ def run(
 
 
 @app.command()
+def serve(
+    briefs_dir: Path = typer.Option(
+        Path("data/briefs"), "--briefs-dir", help="Directory of generated briefs"
+    ),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8080, "--port"),
+    show: bool = typer.Option(False, "--show", help="Open the app in the default browser"),
+) -> None:
+    """Launch the NiceGUI triage webapp for sorting/filtering briefs."""
+    from biibaa.web.app import serve as serve_app
+
+    serve_app(briefs_dir=briefs_dir, host=host, port=port, show=show)
+
+
+@app.command()
 def version() -> None:
     """Print the installed biibaa version."""
     from biibaa import __version__

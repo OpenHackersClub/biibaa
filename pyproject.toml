@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pyoso = ["pyoso>=0.9"]
+web = ["nicegui>=2.0"]
 
 [project.scripts]
 biibaa = "biibaa.cli.main:app"
