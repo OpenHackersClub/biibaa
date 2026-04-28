@@ -141,9 +141,10 @@ _HEAD_CSS = """\
 </style>
 """
 
-# Each column declares only what we render — the multi-sort picker drives sort
-# entirely server-side, so no `sortable` flag here (the chip bar is the source
-# of truth and Quasar's column-header sort is intentionally disabled).
+# Sortable columns get sortable=True so Quasar makes their headers clickable;
+# we then intercept the resulting `update:pagination` event and feed the click
+# into our multi-sort stack (append on first click, flip direction on repeat).
+# The "tags" column is excluded — list values have no sensible total order.
 _COLUMNS: list[dict[str, Any]] = [
     {"name": "slug", "label": "Project", "field": "slug", "align": "left", "classes": "mono"},
     {"name": "ecosystem", "label": "Eco", "field": "ecosystem", "align": "center"},
@@ -183,6 +184,10 @@ _SORT_COLUMNS: tuple[str, ...] = (
     "archived",
     "date",
 )
+
+for _col in _COLUMNS:
+    if _col["name"] in _SORT_COLUMNS:
+        _col["sortable"] = True
 
 
 def _row_dict(b: BriefRow) -> dict[str, Any]:
@@ -418,6 +423,24 @@ def build_app(briefs_dir: Path) -> None:
             if b is not None and md is not None:
                 md.set_content(b.body)
 
+        def _on_pagination(e: Any) -> None:
+            """Column-header click → append col to sort stack, or flip if present.
+            Quasar fires update:pagination on every header click; we don't care
+            about its descending value (we own the direction)."""
+            payload = e.args[0] if isinstance(e.args, list) and e.args else e.args
+            if not isinstance(payload, dict):
+                return
+            sort_by = payload.get("sortBy")
+            if not sort_by or sort_by not in _SORT_COLUMNS:
+                return
+            for i, (col, desc) in enumerate(state["sort_keys"]):
+                if col == sort_by:
+                    state["sort_keys"][i] = (col, not desc)
+                    _refresh_all()
+                    return
+            state["sort_keys"].append((sort_by, True))
+            _refresh_all()
+
         @ui.refreshable
         def _render_table() -> None:
             rows = visible_rows()
@@ -427,6 +450,10 @@ def build_app(briefs_dir: Path) -> None:
                 row_key="slug",
                 pagination=25,
             ).classes("w-full").props("flat dense")
+            # Disable Quasar's in-place sort — our chip stack is the source of
+            # truth; the table just receives pre-sorted rows. Without this the
+            # column header click would re-shuffle by a single column.
+            t._props[":sort-method"] = "(rows) => rows"
             t.add_slot(
                 "top-right",
                 """
@@ -459,6 +486,7 @@ def build_app(briefs_dir: Path) -> None:
                 """,
             )
             t.on("rowClick", _on_row_click)
+            t.on("update:pagination", _on_pagination)
 
         refreshables["table"] = _render_table
 
