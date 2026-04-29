@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pyoso = ["pyoso>=0.9"]
+warehouse = ["sqlmesh[duckdb]>=0.150"]
 
 [project.scripts]
 biibaa = "biibaa.cli.main:app"

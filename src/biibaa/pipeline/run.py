@@ -399,6 +399,8 @@ def run(
     fanout_top_n: int = 40,
     dependents_per_replacement: int = 5,
     min_weekly_downloads: int = 50_000,
+    land_raw: bool = False,
+    raw_root: Path | None = None,
 ) -> list[Path]:
     """Pull advisories + replacement-fan-outs, score, render top-N briefs."""
     run_at = datetime.now(UTC)
@@ -497,6 +499,16 @@ def run(
         skipped=skipped,
         min_weekly_downloads=min_weekly_downloads,
     )
+
+    # Land raw Parquet *before* eligibility / scoring filters so the warehouse
+    # holds the full source-of-truth snapshot — downstream SQLMesh marts can
+    # re-derive eligibility without forcing another ingest pass.
+    if land_raw:
+        from biibaa.warehouse import land_advisories, land_projects
+
+        target_root = raw_root or Path("data/raw")
+        land_advisories(advisories, raw_root=target_root)
+        land_projects(projects.values(), raw_root=target_root)
 
     # Build opportunities + briefs.
     briefs: list[Brief] = []

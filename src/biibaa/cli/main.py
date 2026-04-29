@@ -46,6 +46,19 @@ def run(
     min_weekly_downloads: int = typer.Option(
         50_000, "--min-weekly-downloads", help="Drop projects below this floor"
     ),
+    land_raw: bool = typer.Option(
+        False,
+        "--land-raw/--no-land-raw",
+        help=(
+            "Also land raw advisories/projects as Parquet under data/raw/ "
+            "(requires the 'warehouse' extra)."
+        ),
+    ),
+    raw_root: Path = typer.Option(
+        Path("data/raw"),
+        "--raw-root",
+        help="Root for landed Parquet partitions when --land-raw is set.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Ingest advisories, score, and render top-N improvement briefs."""
@@ -58,6 +71,8 @@ def run(
         fanout_top_n=fanout_top_n,
         dependents_per_replacement=dependents_per_replacement,
         min_weekly_downloads=min_weekly_downloads,
+        land_raw=land_raw,
+        raw_root=raw_root,
     )
     typer.echo(f"Generated {len(paths)} briefs:")
     for p in paths:
