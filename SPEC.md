@@ -5,7 +5,8 @@
 > **Status (2026-04-28)** — MVP is built end-to-end (`biibaa run` produces ranked briefs at
 > `data/briefs/<ecosystem>/<slug>.md`, overwriting prior runs in place) and a static Astro site renders them.
 > Sources, storage, scoring, and pipeline sections below tag each item ✅ **built**, ⚠️ **partial**, or
-> ❌ **deferred**. SQLMesh / DuckDB warehouse (§8, §9) is deferred — current pipeline is in-memory
+> ❌ **deferred**. SQLMesh / DuckDB warehouse (§8, §9) is mostly deferred — current pipeline is in-memory
+> Python. ⚠️ A SQLMesh **skeleton** lives under `sqlmesh/` (config, two staging models, one mart, a custom audit, a stub score macro); raw Parquet landing and full model coverage remain follow-up.
 > Python. See [README.md](README.md) for the operator-facing summary and the open issues for the
 > follow-up backlog.
 
@@ -378,11 +379,11 @@ biibaa/
 | Layer | Tool | Responsibility | Status |
 |---|---|---|---|
 | **Ingest** | Python (httpx, pydantic v2) | Pull from sources; land raw Parquet/JSON in `data/raw/<source>/<date>/` | ⚠️ partial — adapters built, but no Parquet landing |
-| **Staging** | SQLMesh `INCREMENTAL_BY_TIME_RANGE` models (`read_parquet`) | Decode raw → typed staging tables; one staging model per source, partitioned by ingest date | ❌ deferred |
+| **Staging** | SQLMesh `INCREMENTAL_BY_TIME_RANGE` models (`read_parquet`) | Decode raw → typed staging tables; one staging model per source, partitioned by ingest date | ⚠️ skeleton — `sqlmesh/models/staging/{advisories,projects}.sql`; awaits raw Parquet landing |
 | **Intermediate** | SQLMesh `VIEW` / `INCREMENTAL` models | Source-precedence resolution, joins, dedupe | ❌ deferred |
-| **Marts** | SQLMesh `FULL` or `INCREMENTAL` models | `projects`, `advisories`, `replacements`, `dependents`, `opportunities` | ❌ deferred |
-| **Score** | SQLMesh SQL + macros | Apply popularity + severity + effort heuristics; materialize `opportunities` | ❌ deferred (lives in `scoring.py` today) |
-| **Audits** | SQLMesh audits | `not_null`, `unique_values`, `relationships`, custom (e.g. `score_in_range`) | ❌ deferred |
+| **Marts** | SQLMesh `FULL` or `INCREMENTAL` models | `projects`, `advisories`, `replacements`, `dependents`, `opportunities` | ⚠️ skeleton — `sqlmesh/models/marts/opportunities.sql` only |
+| **Score** | SQLMesh SQL + macros | Apply popularity + severity + effort heuristics; materialize `opportunities` | ⚠️ stub macro `score_opportunity` in `sqlmesh/macros/`; full port of `scoring.py` deferred |
+| **Audits** | SQLMesh audits | `not_null`, `unique_values`, `relationships`, custom (e.g. `score_in_range`) | ⚠️ skeleton — `not_null`/`unique_values` declared inline; custom `score_in_range.sql` added |
 | **Brief** | Python + Jinja2 | Read `opportunities` from DuckDB; render Markdown | ✅ built (reads in-memory, not DuckDB) |
 | **CLI** | Python (Typer) | `biibaa ingest <source>`, `biibaa run`, `biibaa brief`, `biibaa show <project>` | ⚠️ partial — `run` + `version` only; `ingest`/`brief`/`show` deferred |
 
@@ -394,7 +395,7 @@ biibaa/
 - **pytest** + **pytest-httpx** — adapter unit tests with fixture-recorded HTTP responses (✅ broad coverage)
 - **Pydantic v2** — domain types and adapter response decoding
 - **Astro 5 + Tailwind v4** (`site/`) — static site renderer for briefs
-- **SQLMesh audits / tests** — ❌ deferred along with the warehouse
+- **SQLMesh audits / tests** — ⚠️ skeleton scaffolded under `sqlmesh/`; full models + raw Parquet landing remain deferred
 
 ## 10. Operations
 

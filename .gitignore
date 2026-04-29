@@ -25,6 +25,10 @@ data/raw/
 data/warehouse.duckdb
 data/dependents_cache.sqlite
 
+# SQLMesh local state (interval state, plan cache).
+sqlmesh/.cache/
+.sqlmesh/
+
 # Editor
 .vscode/
 .idea/
