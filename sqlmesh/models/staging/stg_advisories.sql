@@ -8,7 +8,7 @@ MODEL (
   grain (id, ingest_date),
   audits (
     not_null(columns := (id, project_purl, ingest_date)),
-    unique_values(columns := (id, ingest_date))
+    unique_combination_of_columns(columns := (id, ingest_date))
   )
 );
 

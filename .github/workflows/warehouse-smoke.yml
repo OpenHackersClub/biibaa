@@ -1,0 +1,45 @@
+name: Warehouse smoke
+
+on:
+  pull_request:
+    paths:
+      - "sqlmesh/**"
+      - "src/biibaa/warehouse/**"
+      - "tests/test_warehouse_landing.py"
+      - "tests/test_sqlmesh_plan.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/warehouse-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sqlmesh/**"
+      - "src/biibaa/warehouse/**"
+      - "tests/test_warehouse_landing.py"
+      - "tests/test_sqlmesh_plan.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/warehouse-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      # sqlmesh 0.234.x calls ast.Str (removed in Python 3.14). Pin 3.13
+      # until upstream supports 3.14, then drop the version pin.
+      - name: Run warehouse + sqlmesh smoke
+        run: |
+          uv run --python 3.13 --extra warehouse pytest \
+            tests/test_warehouse_landing.py \
+            tests/test_sqlmesh_plan.py \
+            -v
