@@ -6,7 +6,8 @@ MODEL (
   audits (
     not_null(columns := (id, kind, project_purl, score)),
     unique_values(columns := (id)),
-    score_in_range
+    score_in_range,
+    no_archived_active_opps
   )
 );
 
