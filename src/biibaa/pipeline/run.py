@@ -504,11 +504,29 @@ def run(
     # holds the full source-of-truth snapshot — downstream SQLMesh marts can
     # re-derive eligibility without forcing another ingest pass.
     if land_raw:
-        from biibaa.warehouse import land_advisories, land_projects
+        from biibaa.warehouse import (
+            land_advisories,
+            land_dependents,
+            land_projects,
+            land_replacements,
+        )
 
         target_root = raw_root or Path("data/raw")
         land_advisories(advisories, raw_root=target_root)
         land_projects(projects.values(), raw_root=target_root)
+        land_replacements(replacements, raw_root=target_root)
+        # Dependents fan-out keyed by the *source* package (rep.from_purl);
+        # one rep can surface multiple dependents and one source can have
+        # multiple replacement targets, so dedupe per (parent, dependent).
+        fan_out: dict[str, list[Dependent]] = defaultdict(list)
+        seen: set[tuple[str, str]] = set()
+        for rep, dep in fanouts:
+            key = (rep.from_purl, dep.purl)
+            if key in seen:
+                continue
+            seen.add(key)
+            fan_out[rep.from_purl].append(dep)
+        land_dependents(fan_out, raw_root=target_root)
 
     # Build opportunities + briefs.
     briefs: list[Brief] = []
