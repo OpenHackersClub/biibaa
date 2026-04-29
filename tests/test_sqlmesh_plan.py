@@ -46,7 +46,12 @@ from biibaa.scoring import (  # noqa: E402
     popularity,
     severity_score,
 )
-from biibaa.warehouse import land_advisories, land_projects  # noqa: E402
+from biibaa.warehouse import (  # noqa: E402
+    land_advisories,
+    land_dependents,
+    land_projects,
+    land_replacements,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SQLMESH_DIR = REPO_ROOT / "sqlmesh"
@@ -69,6 +74,17 @@ def _yesterday() -> date:
     # The staging models are INCREMENTAL_BY_TIME_RANGE @daily — sqlmesh only
     # backfills *complete* intervals, so today's partition wouldn't be picked up.
     return date.today() - timedelta(days=1)
+
+
+def _land_empty_aux(raw_root: Path, ingest_date: date) -> None:
+    """Land empty replacements/dependents so the staging globs match.
+
+    DuckDB ``READ_PARQUET('.../dt=*/*.parquet')`` errors when no files match;
+    the new ``staging.replacements`` and ``staging.dependents`` models would
+    fail without these even though the test only exercises advisories+projects.
+    """
+    land_replacements([], raw_root=raw_root, ingest_date=ingest_date)
+    land_dependents({}, raw_root=raw_root, ingest_date=ingest_date)
 
 
 def test_sqlmesh_plan_materializes_marts_opportunities(tmp_path: Path) -> None:
@@ -130,6 +146,8 @@ def test_sqlmesh_plan_materializes_marts_opportunities(tmp_path: Path) -> None:
         raw_root=raw,
         ingest_date=ingest,
     )
+
+    _land_empty_aux(raw, ingest)
 
     ctx = Context(paths=[str(SQLMESH_DIR)], config=_build_config(raw, db))
     ctx.plan(auto_apply=True, no_prompts=True)
@@ -246,6 +264,8 @@ def test_score_opportunity_macro_matches_python_scoring(tmp_path: Path) -> None:
         ingest_date=ingest,
     )
 
+    _land_empty_aux(raw, ingest)
+
     ctx = Context(paths=[str(SQLMESH_DIR)], config=_build_config(raw, db))
     ctx.plan(auto_apply=True, no_prompts=True)
 
@@ -269,3 +289,64 @@ def test_score_opportunity_macro_matches_python_scoring(tmp_path: Path) -> None:
             f"{f['id']}: SQL={actual:.6f} vs Python={expected:.6f} "
             f"(pop={pop:.2f} sev={sev:.2f} eff={eff:.2f} imp={imp:.2f} conf={conf:.2f})"
         )
+
+
+def test_opportunity_state_aggregates_first_last_seen_across_partitions(
+    tmp_path: Path,
+) -> None:
+    """``marts.opportunity_state`` derives ``first_seen_at`` / ``last_seen_at``
+    by aggregating over historical staging partitions. Land the same advisory
+    on two different ingest_dates and assert the lifecycle row reflects the
+    full span — the cross-run signal we need before adding a state machine.
+    """
+    raw = tmp_path / "raw"
+    db = tmp_path / "warehouse.duckdb"
+    older = date.today() - timedelta(days=5)
+    newer = date.today() - timedelta(days=1)
+
+    advisory_dict = dict(
+        id="GHSA-recurring",
+        project_purl="pkg:npm/foo",
+        severity="high",
+        cvss=7.5,
+        summary="patch fix",
+        affected_versions="<1.2.3",
+        fixed_versions=["1.2.3"],
+        refs=[],
+        published_at=datetime(2026, 4, 1, tzinfo=UTC),
+        repo_url="https://github.com/foo/foo",
+    )
+    project = Project(
+        purl="pkg:npm/foo",
+        ecosystem="npm",
+        name="foo",
+        repo_url="https://github.com/foo/foo",
+        downloads_weekly=10_000,
+        archived=False,
+    )
+
+    for dt in (older, newer):
+        land_advisories([Advisory(**advisory_dict)], raw_root=raw, ingest_date=dt)
+        land_projects([project], raw_root=raw, ingest_date=dt)
+        _land_empty_aux(raw, dt)
+
+    ctx = Context(paths=[str(SQLMESH_DIR)], config=_build_config(raw, db))
+    ctx.plan(auto_apply=True, no_prompts=True)
+
+    con = duckdb.connect(str(db))
+    rows = con.execute(
+        """
+        SELECT dedupe_key, kind, project_purl, first_seen_at, last_seen_at,
+               partition_count, state
+        FROM marts.opportunity_state
+        """
+    ).fetchall()
+    assert len(rows) == 1
+    (key, kind, purl, first_seen, last_seen, count, state) = rows[0]
+    assert key == "pkg:npm/foo|GHSA-recurring"
+    assert kind == "vulnerability-fix"
+    assert purl == "pkg:npm/foo"
+    assert first_seen.date() == older
+    assert last_seen.date() == newer
+    assert count == 2
+    assert state == "new"
