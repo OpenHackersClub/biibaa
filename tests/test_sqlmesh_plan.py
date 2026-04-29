@@ -72,8 +72,11 @@ def _build_config(raw_root: Path, db_path: Path) -> Config:
 
 def _yesterday() -> date:
     # The staging models are INCREMENTAL_BY_TIME_RANGE @daily — sqlmesh only
-    # backfills *complete* intervals, so today's partition wouldn't be picked up.
-    return date.today() - timedelta(days=1)
+    # backfills *complete* intervals. Use UTC since sqlmesh evaluates interval
+    # boundaries against UTC; ``date.today()`` returns local date and can be
+    # one day ahead of UTC in non-zero timezones (e.g. +08 just past midnight),
+    # making "yesterday" land in an interval that hasn't closed yet.
+    return (datetime.now(UTC) - timedelta(days=1)).date()
 
 
 def _land_empty_aux(raw_root: Path, ingest_date: date) -> None:
@@ -301,8 +304,9 @@ def test_opportunity_state_aggregates_first_last_seen_across_partitions(
     """
     raw = tmp_path / "raw"
     db = tmp_path / "warehouse.duckdb"
-    older = date.today() - timedelta(days=5)
-    newer = date.today() - timedelta(days=1)
+    today_utc = datetime.now(UTC).date()
+    older = today_utc - timedelta(days=5)
+    newer = today_utc - timedelta(days=1)
 
     advisory_dict = dict(
         id="GHSA-recurring",
