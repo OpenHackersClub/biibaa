@@ -6,7 +6,7 @@
 > `data/briefs/<ecosystem>/<slug>.md`, overwriting prior runs in place) and a static Astro site renders them.
 > Sources, storage, scoring, and pipeline sections below tag each item ✅ **built**, ⚠️ **partial**, or
 > ❌ **deferred**. SQLMesh / DuckDB warehouse (§8, §9) is mostly deferred — current pipeline is in-memory
-> Python. ⚠️ A SQLMesh **skeleton** lives under `sqlmesh/` (config, two staging models, one mart, a custom audit, a stub score macro); raw Parquet landing and full model coverage remain follow-up.
+> Python. ⚠️ A SQLMesh **skeleton** lives under `sqlmesh/` (config, two staging models, one mart, a custom audit, a stub score macro). Raw Parquet landing for `advisories` + `projects` is wired (`biibaa.warehouse.landing`, opt-in via `biibaa run --land-raw`); full model coverage remains follow-up.
 > Python. See [README.md](README.md) for the operator-facing summary and the open issues for the
 > follow-up backlog.
 
@@ -352,6 +352,7 @@ This is a deliberate departure from the TypeScript/Effect-TS preference in `arch
 - `briefs/render.py` + `templates/brief.md.j2` — Jinja Markdown body + structured YAML frontmatter
 - `cli/main.py` — Typer entry: `biibaa run`, `biibaa version`
 - `scoring.py` — popularity / severity / effort / confidence / final blend
+- `warehouse/landing.py` — DuckDB Parquet writers for `advisories` + `projects` (optional `[warehouse]` extra)
 
 ### 9.3 Project layout (today)
 
@@ -365,6 +366,7 @@ biibaa/
     pipeline/
     briefs/
     cli/
+    warehouse/                  # optional [warehouse] extra — DuckDB Parquet landing
     scoring.py
   site/                           # Astro + Tailwind v4 SSG (briefs renderer, Cloudflare Pages)
   tests/                          # pytest + pytest-httpx unit + adapter tests
@@ -378,8 +380,8 @@ biibaa/
 
 | Layer | Tool | Responsibility | Status |
 |---|---|---|---|
-| **Ingest** | Python (httpx, pydantic v2) | Pull from sources; land raw Parquet/JSON in `data/raw/<source>/<date>/` | ⚠️ partial — adapters built, but no Parquet landing |
-| **Staging** | SQLMesh `INCREMENTAL_BY_TIME_RANGE` models (`read_parquet`) | Decode raw → typed staging tables; one staging model per source, partitioned by ingest date | ⚠️ skeleton — `sqlmesh/models/staging/{advisories,projects}.sql`; awaits raw Parquet landing |
+| **Ingest** | Python (httpx, pydantic v2) | Pull from sources; land raw Parquet/JSON in `data/raw/<source>/dt=<date>/` | ⚠️ partial — adapters built; `advisories` + `projects` Parquet landing wired via `biibaa.warehouse.landing` (opt-in `biibaa run --land-raw`); other sources deferred |
+| **Staging** | SQLMesh `INCREMENTAL_BY_TIME_RANGE` models (`read_parquet`) | Decode raw → typed staging tables; one staging model per source, partitioned by ingest date | ⚠️ skeleton — `sqlmesh/models/staging/{advisories,projects}.sql` now read landed partitions written by `biibaa.warehouse.landing` |
 | **Intermediate** | SQLMesh `VIEW` / `INCREMENTAL` models | Source-precedence resolution, joins, dedupe | ❌ deferred |
 | **Marts** | SQLMesh `FULL` or `INCREMENTAL` models | `projects`, `advisories`, `replacements`, `dependents`, `opportunities` | ⚠️ skeleton — `sqlmesh/models/marts/opportunities.sql` only |
 | **Score** | SQLMesh SQL + macros | Apply popularity + severity + effort heuristics; materialize `opportunities` | ⚠️ stub macro `score_opportunity` in `sqlmesh/macros/`; full port of `scoring.py` deferred |
