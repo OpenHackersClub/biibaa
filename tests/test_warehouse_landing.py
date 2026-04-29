@@ -17,8 +17,14 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
-from biibaa.domain import Advisory, Project  # noqa: E402
-from biibaa.warehouse import land_advisories, land_projects  # noqa: E402
+from biibaa.domain import Advisory, Project, Replacement  # noqa: E402
+from biibaa.ports.dependents import Dependent  # noqa: E402
+from biibaa.warehouse import (  # noqa: E402
+    land_advisories,
+    land_dependents,
+    land_projects,
+    land_replacements,
+)
 
 
 def _advisory(**overrides) -> Advisory:
@@ -145,3 +151,120 @@ def test_land_advisories_idempotent_overwrite(tmp_path: Path) -> None:
         f"SELECT COUNT(*) FROM read_parquet('{out}')"
     ).fetchone()
     assert count == 1
+
+
+def test_land_replacements_writes_typed_columns(tmp_path: Path) -> None:
+    out = land_replacements(
+        [
+            Replacement(
+                id="micro-utilities/is-array",
+                from_purl="pkg:npm/is-array",
+                to_purls=["pkg:npm/array-isarray"],
+                axis="bloat",
+                effort="drop-in",
+                evidence={"saved_bytes": 1234, "note": "trivial swap"},
+            ),
+            Replacement(
+                id="native/util-promisify",
+                from_purl="pkg:npm/util-promisify",
+                to_purls=[],
+                axis="bloat",
+                effort="drop-in",
+            ),
+        ],
+        raw_root=tmp_path,
+        ingest_date=date(2026, 4, 28),
+    )
+    assert out == tmp_path / "replacements" / "dt=2026-04-28" / "replacements.parquet"
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT id, from_purl, to_purls, axis, effort, evidence_json, ingest_date "
+        f"FROM read_parquet('{out}') ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    (id1, from1, to1, axis1, eff1, ev1, dt1) = rows[0]
+    assert id1 == "micro-utilities/is-array"
+    assert from1 == "pkg:npm/is-array"
+    assert to1 == ["pkg:npm/array-isarray"]
+    assert axis1 == "bloat"
+    assert eff1 == "drop-in"
+    assert "saved_bytes" in ev1  # JSON-serialized
+    assert dt1 == date(2026, 4, 28)
+    # Empty evidence → NULL column
+    assert rows[1][5] is None
+
+
+def test_land_replacements_empty_keeps_schema(tmp_path: Path) -> None:
+    out = land_replacements([], raw_root=tmp_path, ingest_date=date(2026, 4, 28))
+    con = duckdb.connect()
+    schema = {
+        name: ddl
+        for name, ddl, *_ in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{out}')"
+        ).fetchall()
+    }
+    assert schema["id"] == "VARCHAR"
+    assert schema["from_purl"] == "VARCHAR"
+    assert schema["to_purls"] == "VARCHAR[]"
+    assert schema["axis"] == "VARCHAR"
+    assert schema["effort"] == "VARCHAR"
+    assert schema["ingest_date"] == "DATE"
+
+
+def test_land_dependents_flattens_fan_out(tmp_path: Path) -> None:
+    out = land_dependents(
+        {
+            "pkg:npm/foo": [
+                Dependent(
+                    name="alpha",
+                    purl="pkg:npm/alpha",
+                    repo_url="https://github.com/alpha/alpha",
+                    lifetime_downloads=1_000_000,
+                ),
+                Dependent(
+                    name="beta",
+                    purl="pkg:npm/beta",
+                    repo_url=None,
+                    lifetime_downloads=None,
+                ),
+            ],
+            "pkg:npm/bar": [
+                Dependent(
+                    name="gamma",
+                    purl="pkg:npm/gamma",
+                    repo_url="https://github.com/gamma/gamma",
+                    lifetime_downloads=42,
+                ),
+            ],
+        },
+        raw_root=tmp_path,
+        ingest_date=date(2026, 4, 28),
+    )
+    assert out == tmp_path / "dependents" / "dt=2026-04-28" / "dependents.parquet"
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT parent_purl, dependent_purl, dependent_lifetime_downloads "
+        f"FROM read_parquet('{out}') ORDER BY parent_purl, dependent_purl"
+    ).fetchall()
+    assert rows == [
+        ("pkg:npm/bar", "pkg:npm/gamma", 42),
+        ("pkg:npm/foo", "pkg:npm/alpha", 1_000_000),
+        ("pkg:npm/foo", "pkg:npm/beta", None),
+    ]
+
+
+def test_land_dependents_empty_keeps_schema(tmp_path: Path) -> None:
+    out = land_dependents({}, raw_root=tmp_path, ingest_date=date(2026, 4, 28))
+    con = duckdb.connect()
+    schema = {
+        name: ddl
+        for name, ddl, *_ in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{out}')"
+        ).fetchall()
+    }
+    assert schema["parent_purl"] == "VARCHAR"
+    assert schema["dependent_purl"] == "VARCHAR"
+    assert schema["dependent_lifetime_downloads"] == "BIGINT"
+    assert schema["ingest_date"] == "DATE"

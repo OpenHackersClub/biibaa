@@ -11,7 +11,15 @@ Importing this module requires the optional `warehouse` extra
 from biibaa.warehouse.landing import (
     DEFAULT_RAW_ROOT,
     land_advisories,
+    land_dependents,
     land_projects,
+    land_replacements,
 )
 
-__all__ = ["DEFAULT_RAW_ROOT", "land_advisories", "land_projects"]
+__all__ = [
+    "DEFAULT_RAW_ROOT",
+    "land_advisories",
+    "land_dependents",
+    "land_projects",
+    "land_replacements",
+]

@@ -13,6 +13,7 @@ current staging models simply don't project them yet.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -20,7 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from biibaa.domain import Advisory, Project
+from biibaa.domain import Advisory, Project, Replacement
+from biibaa.ports.dependents import Dependent
 
 if TYPE_CHECKING:
     import duckdb
@@ -41,6 +43,25 @@ _ADVISORY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("refs", "TEXT[]"),
     ("published_at", "TIMESTAMP"),
     ("repo_url", "TEXT"),
+    ("ingest_date", "DATE"),
+)
+
+_REPLACEMENT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("id", "TEXT"),
+    ("from_purl", "TEXT"),
+    ("to_purls", "TEXT[]"),
+    ("axis", "TEXT"),
+    ("effort", "TEXT"),
+    ("evidence_json", "TEXT"),
+    ("ingest_date", "DATE"),
+)
+
+_DEPENDENT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("parent_purl", "TEXT"),
+    ("dependent_purl", "TEXT"),
+    ("dependent_name", "TEXT"),
+    ("dependent_repo_url", "TEXT"),
+    ("dependent_lifetime_downloads", "BIGINT"),
     ("ingest_date", "DATE"),
 )
 
@@ -117,6 +138,29 @@ def _project_row(proj: Project, ingest_date: date) -> tuple[Any, ...]:
         proj.archived,
         proj.has_benchmarks,
         proj.bench_signal,
+        ingest_date,
+    )
+
+
+def _replacement_row(rep: Replacement, ingest_date: date) -> tuple[Any, ...]:
+    return (
+        rep.id,
+        rep.from_purl,
+        list(rep.to_purls),
+        rep.axis,
+        rep.effort,
+        json.dumps(dict(rep.evidence), sort_keys=True) if rep.evidence else None,
+        ingest_date,
+    )
+
+
+def _dependent_row(parent_purl: str, dep: Dependent, ingest_date: date) -> tuple[Any, ...]:
+    return (
+        parent_purl,
+        dep.purl,
+        dep.name,
+        dep.repo_url,
+        dep.lifetime_downloads,
         ingest_date,
     )
 
@@ -207,6 +251,73 @@ def land_projects(
     )
     log.info(
         "warehouse.projects_landed",
+        path=str(out_path),
+        rows=len(rows),
+        ingest_date=ingest_date.isoformat(),
+    )
+    return out_path
+
+
+def land_replacements(
+    replacements: Iterable[Replacement],
+    *,
+    raw_root: Path = DEFAULT_RAW_ROOT,
+    ingest_date: date | None = None,
+    filename: str = "replacements.parquet",
+) -> Path:
+    """Land replacements at ``<raw_root>/replacements/dt=<ingest_date>/<filename>``.
+
+    See :func:`land_advisories` for semantics. ``Replacement.evidence`` is
+    serialized as JSON in the ``evidence_json`` column since the dict is
+    heterogeneously typed.
+    """
+    ingest_date = ingest_date or date.today()
+    replacements = list(replacements)
+    rows = [_replacement_row(r, ingest_date) for r in replacements]
+    out_path = _partition_path(raw_root, "replacements", ingest_date, filename)
+    _write(
+        table_name="replacements",
+        columns=_REPLACEMENT_COLUMNS,
+        rows=rows,
+        out_path=out_path,
+    )
+    log.info(
+        "warehouse.replacements_landed",
+        path=str(out_path),
+        rows=len(rows),
+        ingest_date=ingest_date.isoformat(),
+    )
+    return out_path
+
+
+def land_dependents(
+    fan_out: dict[str, Iterable[Dependent]],
+    *,
+    raw_root: Path = DEFAULT_RAW_ROOT,
+    ingest_date: date | None = None,
+    filename: str = "dependents.parquet",
+) -> Path:
+    """Land the dependents fan-out as one row per (parent, dependent) pair.
+
+    ``fan_out`` maps each parent ``purl`` to the list of dependents fetched
+    from the configured ``DependentsSource``. Empty fan-out still produces
+    an empty Parquet file with the declared schema.
+    """
+    ingest_date = ingest_date or date.today()
+    rows = [
+        _dependent_row(parent, dep, ingest_date)
+        for parent, deps in fan_out.items()
+        for dep in deps
+    ]
+    out_path = _partition_path(raw_root, "dependents", ingest_date, filename)
+    _write(
+        table_name="dependents",
+        columns=_DEPENDENT_COLUMNS,
+        rows=rows,
+        out_path=out_path,
+    )
+    log.info(
+        "warehouse.dependents_landed",
         path=str(out_path),
         rows=len(rows),
         ingest_date=ingest_date.isoformat(),

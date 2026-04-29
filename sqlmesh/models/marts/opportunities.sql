@@ -4,8 +4,8 @@ MODEL (
   cron '@daily',
   grain (id),
   audits (
-    not_null(columns := (id, kind, project_purl, score)),
-    unique_values(columns := (id)),
+    not_null(columns := (id, kind, project_purl, dedupe_key, score)),
+    unique_values(columns := (id, dedupe_key)),
     score_in_range,
     no_archived_active_opps
   )
@@ -39,6 +39,7 @@ latest_projects AS (
 SELECT
   a.id                                          AS id,
   'vulnerability-fix'::TEXT                     AS kind,
+  (a.project_purl || '|' || a.id)::TEXT         AS dedupe_key,
   a.project_purl                                AS project_purl,
   p.ecosystem                                   AS ecosystem,
   p.name                                        AS project_name,
