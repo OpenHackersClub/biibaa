@@ -31,6 +31,7 @@ latest_projects AS (
     downloads_weekly,
     dependents,
     archived,
+    last_pr_merged_at,
     ROW_NUMBER() OVER (PARTITION BY purl ORDER BY ingest_date DESC) AS rn
   FROM staging.projects
 )
@@ -47,7 +48,10 @@ SELECT
   p.stars                                       AS project_stars,
   p.downloads_weekly                            AS project_downloads_weekly,
   p.dependents                                  AS project_dependents,
-  @score_opportunity(a.cvss, p.dependents)      AS score,
+  @score_opportunity(
+    a.cvss, p.downloads_weekly, p.stars,
+    a.fixed_versions, a.summary, p.last_pr_merged_at
+  ) AS score,
   CURRENT_TIMESTAMP                             AS computed_at
 FROM latest_advisories a
 LEFT JOIN latest_projects p

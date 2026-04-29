@@ -22,6 +22,7 @@ SELECT
   dependents::BIGINT          AS dependents,
   last_release_at::TIMESTAMP  AS last_release_at,
   last_commit_at::TIMESTAMP   AS last_commit_at,
+  last_pr_merged_at::TIMESTAMP AS last_pr_merged_at,
   archived::BOOLEAN           AS archived,
   has_benchmarks::BOOLEAN     AS has_benchmarks,
   ingest_date::DATE           AS ingest_date
