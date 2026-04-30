@@ -250,6 +250,30 @@ def _drop_outdated_unpatched(
     return kept
 
 
+def _drop_when_sibling_patched(advisories: list[Advisory]) -> list[Advisory]:
+    """Drop unpatched advisories whose GHSA has a patched sibling package.
+
+    GHSA records often pair an abandoned package (e.g. `xmldom`) with a
+    renamed/scoped successor (`@xmldom/xmldom`) that ships the fix. Both
+    point at the same upstream repo, so a contributor PR to that repo is
+    redundant — the work is already done.
+    """
+    kept: list[Advisory] = []
+    dropped = 0
+    for a in advisories:
+        if a.has_patched_sibling:
+            log.info(
+                "advisory.dropped_sibling_patched",
+                ghsa=a.id,
+                purl=a.project_purl,
+            )
+            dropped += 1
+            continue
+        kept.append(a)
+    log.info("advisory.sibling_patched_filter", kept=len(kept), dropped=dropped)
+    return kept
+
+
 def _dedupe_replacements(reps: list[Replacement]) -> list[Replacement]:
     """Same from_purl can appear in multiple manifests — keep the easiest effort."""
     by_from: dict[str, Replacement] = {}
@@ -419,6 +443,7 @@ def run(
         advisory_src.fetch(ecosystem=ecosystem, limit=advisory_limit)
     )
     log.info("pipeline.advisories_fetched", count=len(advisories))
+    advisories = _drop_when_sibling_patched(advisories)
     if registry_src:
         advisories = _drop_outdated_unpatched(advisories, registry_src)
 

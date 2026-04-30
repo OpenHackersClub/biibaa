@@ -44,6 +44,11 @@ class Advisory(_Frozen):
     refs: list[str] = Field(default_factory=list)
     published_at: datetime | None = None
     repo_url: str | None = None
+    # True when another package in the same GHSA already has a
+    # `first_patched_version`. Signals that the upstream project has shipped
+    # a fix (typically under a renamed/scoped successor package), so a
+    # contributor PR would be redundant.
+    has_patched_sibling: bool = False
 
 
 class Replacement(_Frozen):

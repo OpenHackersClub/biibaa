@@ -95,7 +95,11 @@ class GithubAdvisorySource:
             for adv in page:
                 if adv.get("withdrawn_at"):
                     continue
-                for vuln in adv.get("vulnerabilities") or []:
+                vulns = adv.get("vulnerabilities") or []
+                has_patched_sibling = any(
+                    v.get("first_patched_version") for v in vulns
+                )
+                for vuln in vulns:
                     pkg = vuln.get("package") or {}
                     if not pkg.get("name") or pkg.get("ecosystem", "").lower() != ecosystem:
                         continue
@@ -115,6 +119,7 @@ class GithubAdvisorySource:
                         refs=list(adv.get("references") or []),
                         published_at=_parse_published(adv.get("published_at")),
                         repo_url=adv.get("source_code_location") or None,
+                        has_patched_sibling=has_patched_sibling and not fixed,
                     )
                     emitted += 1
                     if emitted >= limit:
