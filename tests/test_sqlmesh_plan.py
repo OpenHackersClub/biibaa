@@ -47,8 +47,10 @@ from biibaa.scoring import (  # noqa: E402
     severity_score,
 )
 from biibaa.warehouse import (  # noqa: E402
+    OpportunityTransition,
     land_advisories,
     land_dependents,
+    land_opportunity_transitions,
     land_projects,
     land_replacements,
 )
@@ -88,6 +90,7 @@ def _land_empty_aux(raw_root: Path, ingest_date: date) -> None:
     """
     land_replacements([], raw_root=raw_root, ingest_date=ingest_date)
     land_dependents({}, raw_root=raw_root, ingest_date=ingest_date)
+    land_opportunity_transitions([], raw_root=raw_root, ingest_date=ingest_date)
 
 
 def test_sqlmesh_plan_materializes_marts_opportunities(tmp_path: Path) -> None:
@@ -354,3 +357,109 @@ def test_opportunity_state_aggregates_first_last_seen_across_partitions(
     assert last_seen.date() == newer
     assert count == 2
     assert state == "new"
+
+
+def test_opportunity_state_applies_latest_transition(tmp_path: Path) -> None:
+    """``marts.opportunity_state.state`` reflects the latest transition for
+    each ``dedupe_key``, defaulting to ``'new'`` when none has been recorded.
+
+    Lands two transitions for the same dedupe_key with different timestamps
+    and asserts the later one wins. A second dedupe_key has no transition;
+    its state must default to ``'new'``.
+    """
+    raw = tmp_path / "raw"
+    db = tmp_path / "warehouse.duckdb"
+    ingest = _yesterday()
+    now = datetime.now(UTC)
+
+    land_advisories(
+        [
+            Advisory(
+                id="GHSA-acked",
+                project_purl="pkg:npm/foo",
+                severity="high",
+                cvss=7.5,
+                summary="patch fix",
+                affected_versions="<1.2.3",
+                fixed_versions=["1.2.3"],
+                refs=[],
+                published_at=datetime(2026, 4, 1, tzinfo=UTC),
+                repo_url="https://github.com/foo/foo",
+            ),
+            Advisory(
+                id="GHSA-untouched",
+                project_purl="pkg:npm/bar",
+                severity="medium",
+                cvss=5.0,
+                summary="patch fix",
+                affected_versions="<2.0.0",
+                fixed_versions=["2.0.0"],
+                refs=[],
+                published_at=datetime(2026, 4, 1, tzinfo=UTC),
+                repo_url="https://github.com/bar/bar",
+            ),
+        ],
+        raw_root=raw,
+        ingest_date=ingest,
+    )
+    land_projects(
+        [
+            Project(
+                purl="pkg:npm/foo",
+                ecosystem="npm",
+                name="foo",
+                repo_url="https://github.com/foo/foo",
+                downloads_weekly=10_000,
+                archived=False,
+            ),
+            Project(
+                purl="pkg:npm/bar",
+                ecosystem="npm",
+                name="bar",
+                repo_url="https://github.com/bar/bar",
+                downloads_weekly=5_000,
+                archived=False,
+            ),
+        ],
+        raw_root=raw,
+        ingest_date=ingest,
+    )
+    land_replacements([], raw_root=raw, ingest_date=ingest)
+    land_dependents({}, raw_root=raw, ingest_date=ingest)
+
+    # Two transitions for foo: an earlier 'acknowledged' then a later
+    # 'resolved'. The later one wins.
+    land_opportunity_transitions(
+        [
+            OpportunityTransition(
+                dedupe_key="pkg:npm/foo|GHSA-acked",
+                to_state="acknowledged",
+                transitioned_at=now - timedelta(hours=2),
+                actor="alice",
+                reason="triaged",
+            ),
+            OpportunityTransition(
+                dedupe_key="pkg:npm/foo|GHSA-acked",
+                to_state="resolved",
+                transitioned_at=now - timedelta(hours=1),
+                actor="bob",
+                reason="patch landed upstream",
+            ),
+        ],
+        raw_root=raw,
+        ingest_date=ingest,
+    )
+
+    ctx = Context(paths=[str(SQLMESH_DIR)], config=_build_config(raw, db))
+    ctx.plan(auto_apply=True, no_prompts=True)
+
+    con = duckdb.connect(str(db))
+    rows = {
+        key: (state, actor, reason)
+        for key, state, actor, reason in con.execute(
+            "SELECT dedupe_key, state, state_actor, state_reason "
+            "FROM marts.opportunity_state"
+        ).fetchall()
+    }
+    assert rows["pkg:npm/foo|GHSA-acked"] == ("resolved", "bob", "patch landed upstream")
+    assert rows["pkg:npm/bar|GHSA-untouched"] == ("new", None, None)

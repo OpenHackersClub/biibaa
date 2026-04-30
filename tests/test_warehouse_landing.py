@@ -268,3 +268,59 @@ def test_land_dependents_empty_keeps_schema(tmp_path: Path) -> None:
     assert schema["dependent_purl"] == "VARCHAR"
     assert schema["dependent_lifetime_downloads"] == "BIGINT"
     assert schema["ingest_date"] == "DATE"
+
+
+def test_land_opportunity_transitions_writes_event_log(tmp_path: Path) -> None:
+    from biibaa.warehouse import OpportunityTransition, land_opportunity_transitions
+
+    out = land_opportunity_transitions(
+        [
+            OpportunityTransition(
+                dedupe_key="pkg:npm/foo|GHSA-aaa",
+                to_state="acknowledged",
+                transitioned_at=datetime(2026, 4, 28, 10, 0, tzinfo=UTC),
+                actor="alice",
+                reason="triaged",
+            ),
+            OpportunityTransition(
+                dedupe_key="pkg:npm/foo|GHSA-aaa",
+                to_state="resolved",
+                transitioned_at=datetime(2026, 4, 28, 12, 0, tzinfo=UTC),
+                actor=None,
+                reason=None,
+            ),
+        ],
+        raw_root=tmp_path,
+        ingest_date=date(2026, 4, 28),
+    )
+    assert out == tmp_path / "opportunity_transitions" / "dt=2026-04-28" / "transitions.parquet"
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT dedupe_key, to_state, transitioned_at, actor, reason "
+        f"FROM read_parquet('{out}') ORDER BY transitioned_at"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][1] == "acknowledged"
+    assert rows[0][3] == "alice"
+    assert rows[1][1] == "resolved"
+    assert rows[1][3] is None
+
+
+def test_land_opportunity_transitions_empty_keeps_schema(tmp_path: Path) -> None:
+    from biibaa.warehouse import land_opportunity_transitions
+
+    out = land_opportunity_transitions(
+        [], raw_root=tmp_path, ingest_date=date(2026, 4, 28)
+    )
+    con = duckdb.connect()
+    schema = {
+        name: ddl
+        for name, ddl, *_ in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{out}')"
+        ).fetchall()
+    }
+    assert schema["dedupe_key"] == "VARCHAR"
+    assert schema["to_state"] == "VARCHAR"
+    assert schema["transitioned_at"] == "TIMESTAMP"
+    assert schema["ingest_date"] == "DATE"
