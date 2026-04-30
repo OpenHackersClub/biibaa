@@ -64,6 +64,35 @@ def test_only_unpatched_emits_packages_without_fix(httpx_mock: HTTPXMock) -> Non
     assert a.project_purl == "pkg:npm/thingy"
     assert a.fixed_versions == []
     assert a.repo_url == "https://github.com/example/thingy"
+    # Sibling `widget` in the same GHSA is patched — flag for downstream filtering.
+    assert a.has_patched_sibling is True
+
+
+def test_has_patched_sibling_false_when_all_unpatched(httpx_mock: HTTPXMock) -> None:
+    fixture = [
+        {
+            "ghsa_id": "GHSA-test-3333-cccc",
+            "summary": "All packages still unpatched",
+            "severity": "high",
+            "cvss_severities": {"cvss_v3": {"score": 7.5}},
+            "vulnerabilities": [
+                {
+                    "package": {"ecosystem": "npm", "name": "lonely"},
+                    "vulnerable_version_range": "<= 0.1.0",
+                    "first_patched_version": None,
+                }
+            ],
+        }
+    ]
+    for sev in ("critical", "high", "medium"):
+        httpx_mock.add_response(
+            url=f"https://api.github.com/advisories?ecosystem=npm&per_page=100&severity={sev}",
+            json=fixture if sev == "high" else [],
+        )
+    src = GithubAdvisorySource(client=httpx.Client())
+    out = list(src.fetch())
+    assert len(out) == 1
+    assert out[0].has_patched_sibling is False
 
 
 def test_legacy_only_unpatched_false_emits_patched(httpx_mock: HTTPXMock) -> None:
