@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,15 @@ _REPLACEMENT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("axis", "TEXT"),
     ("effort", "TEXT"),
     ("evidence_json", "TEXT"),
+    ("ingest_date", "DATE"),
+)
+
+_TRANSITION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("dedupe_key", "TEXT"),
+    ("to_state", "TEXT"),
+    ("transitioned_at", "TIMESTAMP"),
+    ("actor", "TEXT"),
+    ("reason", "TEXT"),
     ("ingest_date", "DATE"),
 )
 
@@ -150,6 +160,36 @@ def _replacement_row(rep: Replacement, ingest_date: date) -> tuple[Any, ...]:
         rep.axis,
         rep.effort,
         json.dumps(dict(rep.evidence), sort_keys=True) if rep.evidence else None,
+        ingest_date,
+    )
+
+
+@dataclass(frozen=True)
+class OpportunityTransition:
+    """One lifecycle transition event for an opportunity ``dedupe_key``.
+
+    Append-only event log: many rows per ``dedupe_key`` accumulate over time;
+    the ``marts.opportunity_state`` mart picks the latest by
+    ``transitioned_at``. ``to_state`` should be one of the
+    ``biibaa.domain.OpportunityState`` literals (``new`` | ``acknowledged`` |
+    ``resolved`` | ``rejected`` | ``duplicate``); the staging model audits
+    enforce membership.
+    """
+
+    dedupe_key: str
+    to_state: str
+    transitioned_at: datetime
+    actor: str | None = None
+    reason: str | None = None
+
+
+def _transition_row(t: OpportunityTransition, ingest_date: date) -> tuple[Any, ...]:
+    return (
+        t.dedupe_key,
+        t.to_state,
+        _strip_tz(t.transitioned_at),
+        t.actor,
+        t.reason,
         ingest_date,
     )
 
@@ -318,6 +358,42 @@ def land_dependents(
     )
     log.info(
         "warehouse.dependents_landed",
+        path=str(out_path),
+        rows=len(rows),
+        ingest_date=ingest_date.isoformat(),
+    )
+    return out_path
+
+
+def land_opportunity_transitions(
+    transitions: Iterable[OpportunityTransition],
+    *,
+    raw_root: Path = DEFAULT_RAW_ROOT,
+    ingest_date: date | None = None,
+    filename: str = "transitions.parquet",
+) -> Path:
+    """Land opportunity-state transitions at
+    ``<raw_root>/opportunity_transitions/dt=<ingest_date>/<filename>``.
+
+    Append-only by convention: re-landing the same partition overwrites the
+    file (idempotent), but each call typically holds the *new* transitions
+    for that day. The mart aggregates across all partitions to pick the
+    latest transition per dedupe_key.
+    """
+    ingest_date = ingest_date or date.today()
+    transitions = list(transitions)
+    rows = [_transition_row(t, ingest_date) for t in transitions]
+    out_path = _partition_path(
+        raw_root, "opportunity_transitions", ingest_date, filename
+    )
+    _write(
+        table_name="opportunity_transitions",
+        columns=_TRANSITION_COLUMNS,
+        rows=rows,
+        out_path=out_path,
+    )
+    log.info(
+        "warehouse.transitions_landed",
         path=str(out_path),
         rows=len(rows),
         ingest_date=ingest_date.isoformat(),
